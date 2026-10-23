@@ -12,11 +12,16 @@ of them. brew-watch is the reminder I wish I’d had.
 
 Open an interactive zsh terminal. If 14 days have passed since the last successful
 check, brew-watch refreshes Homebrew and checks installed formulae and casks.
-It reports updates while preserving whatever you were typing. Nothing is upgraded
-until you explicitly run `brew-watch freshen`.
+It reports updates while preserving whatever you were typing. brew-watch never
+upgrades installed packages; manage upgrades directly through Homebrew.
 
 No menu-bar app, launchd schedule, telemetry, account, cloud service, or third-party
 Python packages. Oh My Zsh is optional.
+
+brew-watch is a separate program: it does not patch zsh or Homebrew. A small,
+marked block in your `.zshrc` asks zsh to start it when a terminal opens. It calls
+Homebrew's existing commands, just as you would at the prompt. Removing that
+block disables automatic checks; the installed launcher can still be run manually.
 
 > **Pre-release.** Further audits and live Homebrew testing are pending. Review
 > the source and [verification limits](#development-and-verification) before installing.
@@ -68,24 +73,22 @@ than weakening those checks. `ZDOTDIR` must be an absolute path inside your home
 Permission checks include macOS ACLs, including inherited grants. Write grants
 are refused on protected paths; private state and newly written private files
 also refuse read/search grants. This is conservative: even grants to the owner
-are refused, while deny-only entries are allowed. Setup never changes existing
-permissions or ACLs to make a check pass.
+are refused, while deny-only entries are allowed on other protected paths.
+Setup and removal refuse any existing ACL on `.zshrc`, including deny-only ACLs,
+so replacing the file cannot silently remove access restrictions. These files
+require manual shell integration/removal that preserves their ACLs. Setup never
+changes existing permissions or ACLs to make a check pass.
 
 ## Commands
 
 ```sh
 brew-watch status
-brew-watch freshen
 brew-watch --help
 ```
 
 - **status** reads local history without contacting Homebrew: last successful
   check, last-known outdated count, and the next check due. A due check runs only
   when a new interactive terminal opens. Status also shows the last check error.
-- **freshen** explicitly refreshes Homebrew, previews outdated packages, and runs
-  `brew upgrade --ask`, retaining Homebrew's confirmation and normal privilege
-  handling. It requires an interactive terminal. A successful upgrade is followed
-  by another scan so status reflects the remaining updates.
 - **--help** explains the commands and the automatic check.
 
 Outside interactive zsh, the installed launcher is at `~/.local/bin/brew-watch`.
@@ -93,7 +96,7 @@ The private `_startup` entry point is for the hook, not an additional public com
 
 The automatic check uses `brew update` followed by `brew outdated --json=v2`.
 **`brew update` changes Homebrew itself and its package information**, but does not
-upgrade your installed packages. A failed refresh never proceeds to an upgrade.
+upgrade your installed packages. A failed refresh stops the check.
 Automatic failures are retried only on a new terminal opening, after a one-hour
 cooldown. Multiple terminals share a lock and the last successful check timestamp.
 Automatic reminders show at most 20 packages, with each package line limited to
@@ -109,15 +112,13 @@ These brews could use a little attention:
   Formula: example-tool  1.0 -> 2.0
   Cask: example-app  3.0 -> 4.0
 
-Freshen eligible packages: brew-watch freshen
-Or inspect them: brew outdated --verbose
+Inspect them with Homebrew: brew outdated --verbose
 No packages have been upgraded.
 ```
 
 Pinned formulae are labelled and left to Homebrew's upgrade rules. Homebrew normally
 excludes self-updating casks and casks with an unspecified latest version; brew-watch
-does not enable greedy mode. Updating one package can affect dependencies, and an
-upgrade is not a database migration. Follow the package's own upgrade instructions.
+does not enable greedy mode. Package upgrades are outside brew-watch's scope.
 
 ## Removal
 
@@ -139,21 +140,11 @@ See [SECURITY.md](SECURITY.md) for the trust boundaries and concrete safeguards.
 No script can guarantee "maximum security" independently of the software it runs.
 
 - The background refresh has a 120-second timeout; the package scan has a
-  60-second timeout. Output and stored state are size-limited. Manual upgrades
-  are not forcibly timed out, since stopping a package installer can leave it
-  partially applied; use Homebrew's normal interaction to stop one.
+  60-second timeout. Output and stored state are size-limited.
 - Failure messages omit raw Homebrew output to avoid exposing secrets or terminal
   escapes. For diagnosis, run `brew update` or `brew outdated --verbose` yourself.
 - Interrupted captured checks terminate their process group before releasing the
-  operation lock, including during `freshen`. An uncatchable kill (`SIGKILL`) or
-  system crash cannot run cleanup. If post-upgrade verification fails, status
-  warns that packages may have changed; its package count remains last-known data.
-- During the interactive upgrade, brew-watch defers its own interrupt, terminate,
-  and hangup handling until Homebrew exits, retaining the operation lock. Terminal
-  signals such as Ctrl-C still reach Homebrew normally. A signal sent only to
-  brew-watch does not forcibly stop an installer. Status records an unverified
-  upgrade before it starts, so an interruption cannot leave an apparently clean
-  result. SIGKILL and system crashes can still release the lock early.
+  operation lock. An uncatchable kill (`SIGKILL`) or system crash cannot run cleanup.
 - State is private JSON, never executable code. Corrupt or unsafe state is refused
   without overwriting it. Inspect `~/.local/state/brew-watch/state.json`; to reset
   history, close other terminals/checks, preserve a copy if needed, and remove only
@@ -166,11 +157,14 @@ No script can guarantee "maximum security" independently of the software it runs
   inherited. Proxy and certificate settings are retained. Homebrew's own stored
   configuration still applies. Use Homebrew directly for workflows requiring
   other environment overrides.
-- Homebrew's executable, its resolved parent directories, and the original
-  executable directory retained in `PATH` must have safe ownership and no
+- Homebrew's executable and every directory traversed while resolving it,
+  including intermediate symlink locations, must have safe ownership and no
   group/world write permissions or ACL write grants. Some shared or admin-group
   writable Homebrew installations will therefore be refused. Review those
   permissions separately; brew-watch does not repair them automatically.
+  The child `PATH` uses the validated, resolved executable directory so retargeting
+  an original directory symlink cannot redirect helper commands. Resolved directory
+  names containing `:` are refused because that character separates `PATH` entries.
 - Cached package names are local data. Nothing is uploaded by brew-watch, but
   Homebrew's commands make their usual network requests.
 
@@ -185,7 +179,7 @@ git diff --check
 
 Tests use isolated temporary homes and a fake Homebrew executable, including a real
 interactive zsh session through a pseudo-terminal. They never upgrade host packages
-or edit your real `.zshrc`. Live Homebrew refresh/upgrade and Apple Silicon hardware
+or edit your real `.zshrc`. Live Homebrew refresh/check and Apple Silicon hardware
 compatibility require separate verification; passing mocked tests does not establish
 either. The first implementation is a local install, not a published Homebrew formula.
 

@@ -40,7 +40,7 @@ class ArgumentParser(argparse.ArgumentParser):
         super().error(safe_text(message))
 
 
-def check_acl(fd, private=False):
+def check_acl(fd, private=False, reject_acl=False):
     """Reject unsafe macOS ACL grants, including inherited entries."""
     global _acl
     if sys.platform != "darwin":
@@ -75,6 +75,8 @@ def check_acl(fd, private=False):
                     break
                 raise Error("Unable to read file ACL permissions; refusing access.")
             which = -1
+            if reject_acl:
+                raise Error("Refusing to replace .zshrc with an existing ACL; its access restrictions must be preserved.")
             if (_acl.acl_get_tag_type(entry, ctypes.byref(tag)) != 0
                     or _acl.acl_get_permset(entry, ctypes.byref(permissions)) != 0):
                 raise Error("Unable to read file ACL permissions; refusing access.")
@@ -129,22 +131,22 @@ def directory(path, private=False):
         os.close(fd)
 
 
-def read_file(fd, name, private=True):
+def read_file(fd, name, private=True, reject_acl=False):
     try:
         source = os.open(name, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW, dir_fd=fd)
     except FileNotFoundError:
         return None
     with os.fdopen(source, "rb") as stream:
         check_stat(os.fstat(stream.fileno()), private=private)
-        check_acl(stream.fileno(), private=private)
+        check_acl(stream.fileno(), private=private, reject_acl=reject_acl)
         data = stream.read(LIMIT + 1)
     if len(data) > LIMIT:
         raise Error("File exceeds the size limit.")
     return data
 
 
-def write_file(fd, name, data, mode=0o600, *, expected=...):
-    read_file(fd, name, private=False)
+def write_file(fd, name, data, mode=0o600, *, expected=..., reject_acl=False):
+    read_file(fd, name, private=False, reject_acl=reject_acl)
     temporary = ".brew-watch-" + secrets.token_hex(16)
     target = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, mode, dir_fd=fd)
     try:
@@ -153,7 +155,7 @@ def write_file(fd, name, data, mode=0o600, *, expected=...):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        current = read_file(fd, name, private=False)
+        current = read_file(fd, name, private=False, reject_acl=reject_acl)
         if expected is not ... and current != expected:
             raise Error("Your .zshrc changed during setup; retry after saving your edits.")
         os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
@@ -253,12 +255,38 @@ def homebrew():
     if not found:
         raise Error("Homebrew was not found on PATH. Load Homebrew before the brew-watch shell hook.")
     path = Path(found).absolute()
-    real = path.resolve(strict=True)
     parents = set()
-    for candidate in (path.parent, real.parent):
-        for parent in (candidate, *candidate.parents):
-            resolved = parent.resolve(strict=True)
-            parents.update((resolved, *resolved.parents))
+
+    def resolve(candidate):
+        current = Path(candidate.anchor)
+        pending = list(candidate.parts[1:])
+        links = 0
+        while pending:
+            parents.add(current)
+            part = pending.pop(0)
+            if part == "..":
+                current = current.parent
+                continue
+            child = current / part
+            if stat.S_ISLNK(child.lstat().st_mode):
+                links += 1
+                if links > 40:
+                    raise Error("Too many symlinks in the Homebrew path.")
+                target = child.readlink()
+                if target.is_absolute():
+                    current = Path(target.anchor)
+                    pending = list(target.parts[1:]) + pending
+                else:
+                    pending = list(target.parts) + pending
+            else:
+                current = child
+        return current
+
+    # Retain every traversed directory, including intermediate symlink locations.
+    executable_directory = resolve(path.parent)
+    if ":" in str(executable_directory):
+        raise Error("The Homebrew executable directory cannot contain a PATH separator.")
+    real = resolve(executable_directory / path.name)
     for parent in sorted(parents, key=lambda item: len(item.parts)):
         fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW)
         try:
@@ -281,7 +309,7 @@ def homebrew():
                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy",
                "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"}
     env = {key: value for key, value in os.environ.items() if key in allowed}
-    env.update(HOME=str(Path.home()), PATH=str(path.parent) + ":/usr/bin:/bin:/usr/sbin:/sbin",
+    env.update(HOME=str(Path.home()), PATH=str(executable_directory) + ":/usr/bin:/bin:/usr/sbin:/sbin",
                HOMEBREW_NO_ANALYTICS="1", HOMEBREW_NO_AUTO_UPDATE="1", HOMEBREW_NO_ENV_HINTS="1")
     return str(real), env
 
@@ -364,46 +392,21 @@ def capture(brew, env, args, timeout=120):
             signal.signal(sig, handler)
 
 
-def scan(brew, env, refresh=True):
-    if refresh:
-        capture(brew, env, ["update"])
+def scan(brew, env):
+    capture(brew, env, ["update"])
     return packages_from_json(capture(brew, env, ["outdated", "--json=v2"], timeout=60))
 
 
-def upgrade(brew, env):
-    interrupted = False
-
-    def on_signal(signum, frame):
-        nonlocal interrupted
-        interrupted = True
-
-    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
-    try:
-        for sig in previous:
-            signal.signal(sig, on_signal)
-        # Keep the terminal and operation lock until Homebrew exits; never kill an installer on a timer.
-        with subprocess.Popen([brew, "upgrade", "--ask"], cwd=Path.home(), env=env) as process:
-            result = process.wait()
-        if interrupted:
-            raise KeyboardInterrupt
-        return result
-    finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
-
-
-def report(packages, compact=False):
+def report(packages):
     if not packages:
         return
     print("\nThese brews could use a little attention:\n")
-    if compact:
-        print(f"Preview of {len(packages)} packages: up to 20 entries; long lines shortened.\n")
-    for package in packages[:20] if compact else packages:
+    print(f"Preview of {len(packages)} packages: up to 20 entries; long lines shortened.\n")
+    for package in packages[:20]:
         pinned = " [pinned; Homebrew will skip it]" if package["pinned"] else ""
         line = safe_text(f"  {package['kind']}: {package['name']}  {package['installed']} -> {package['available']}{pinned}")
-        print(line[:237] + "..." if compact and len(line) > 240 else line)
-    print("\nFreshen eligible packages: brew-watch freshen")
-    print("Or inspect them: brew outdated --verbose")
+        print(line[:237] + "..." if len(line) > 240 else line)
+    print("\nInspect them with Homebrew: brew outdated --verbose")
     print("No packages have been upgraded.\n")
 
 
@@ -433,49 +436,22 @@ def operate(command, fd):
         status(state)
         return 0
     now = int(time.time())
-    if command == "_startup":
-        if state["last_check"] is not None and now - state["last_check"] < INTERVAL:
-            return 0
-        if state["last_attempt"] is not None and now - state["last_attempt"] < RETRY:
-            return 0
+    if state["last_check"] is not None and now - state["last_check"] < INTERVAL:
+        return 0
+    if state["last_attempt"] is not None and now - state["last_attempt"] < RETRY:
+        return 0
     state["last_attempt"] = now
     save_state(fd, state)
-    upgrade_started = False
-    verified = False
     try:
         brew, env = homebrew()
         candidate = dict(state, packages=scan(brew, env), last_check=int(time.time()), error=None)
         save_state(fd, candidate)
         state = candidate
         # shortcut: closing this terminal can lose the notice; add delivery acknowledgement if needed.
-        report(state["packages"], compact=command == "_startup")
-        if command == "freshen":
-            if not state["packages"]:
-                print("Your brews are up to date.")
-                return 0
-            # The caller explicitly requested upgrades; Homebrew owns its prompts and output.
-            upgrade_started = True
-            save_state(fd, dict(state, error="Upgrade started; packages may have changed. Outcome not yet verified."))
-            result = upgrade(brew, env)
-            candidate = dict(state, packages=scan(brew, env, refresh=False), last_check=int(time.time()), error=None)
-            save_state(fd, candidate)
-            state = candidate
-            verified = True
-            if result:
-                raise Error(f"Homebrew upgrade failed (exit {result}); some packages may have changed.")
-            print("Freshening complete. Packages still reported outdated:", len(state["packages"]))
+        report(state["packages"])
         return 0
-    except (Error, OSError, KeyboardInterrupt) as error:
-        if isinstance(error, KeyboardInterrupt) and not upgrade_started:
-            raise
-        if isinstance(error, Error):
-            message = str(error)
-        elif isinstance(error, KeyboardInterrupt):
-            message = "Interrupted."
-        else:
-            message = "Unable to run Homebrew or save the result."
-        if upgrade_started and not verified:
-            message = "Packages may have changed; post-upgrade verification did not complete. " + message
+    except (Error, OSError) as error:
+        message = str(error) if isinstance(error, Error) else "Unable to run Homebrew or save the result."
         state["error"] = message
         save_state(fd, state)
         raise Error(message) from None
@@ -484,17 +460,15 @@ def operate(command, fd):
 def main(argv=None):
     parser = ArgumentParser(prog="brew-watch", description="Check Homebrew on terminal opening, at most once every 14 days.",
                                      epilog="The automatic check refreshes Homebrew itself and metadata, never installed packages. "
-                                     "freshen refreshes, previews, and upgrades eligible formulae and casks using Homebrew. "
+                                     "brew-watch never upgrades installed packages. "
                                      "See README.md for shell setup and removal.")
     parser.color = False  # Python 3.14+; harmless on older supported interpreters.
-    parser.add_argument("command", choices=("status", "freshen", "_startup"), metavar="{status,freshen}",
-                        help="status: last result and next check; freshen: explicitly upgrade packages")
+    parser.add_argument("command", choices=("status", "_startup"), metavar="{status}",
+                        help="status: show the last result and next check without contacting Homebrew")
     args = parser.parse_args(argv)
     try:
         if os.getuid() == 0 or os.geteuid() != os.getuid():
             raise Error("Run brew-watch as your normal user, never with sudo or elevated privileges.")
-        if args.command == "freshen" and not (sys.stdin.isatty() and sys.stdout.isatty()):
-            raise Error("freshen requires an interactive terminal; no upgrades were started.")
         with directory(Path.home() / ".local/state/brew-watch", private=True) as fd:
             if args.command == "status":
                 return operate(args.command, fd)

@@ -50,7 +50,7 @@ def setup(uninstall=False):
         install_fd = stack.enter_context(directory(destination, private=True))
         stack.enter_context(API["locked"](install_fd))
         zfd = stack.enter_context(directory(zsh_directory))
-        existing = read_file(zfd, ".zshrc", private=False)
+        existing = read_file(zfd, ".zshrc", private=False, reject_acl=True)
         original = existing or b""
         cleaned = remove_block(original)
         if uninstall:
@@ -71,7 +71,7 @@ def setup(uninstall=False):
                 with directory(parent, private=parent == destination) as fd:
                     write_file(fd, name, contents, mode)
         if updated != original:
-            if read_file(zfd, ".zshrc", private=False) != existing:
+            if read_file(zfd, ".zshrc", private=False, reject_acl=True) != existing:
                 raise Error("Your .zshrc changed during setup; retry after saving your edits.")
             if existing is not None:
                 backup = ".zshrc.brew-watch-backup-" + secrets.token_hex(12)
@@ -80,7 +80,7 @@ def setup(uninstall=False):
                 print("Preserved startup backup:", API["safe_text"](str(zsh_directory / backup)))
             else:
                 mode = 0o600
-            write_file(zfd, ".zshrc", updated, mode, expected=existing)
+            write_file(zfd, ".zshrc", updated, mode, expected=existing, reject_acl=True)
         if uninstall:
             for parent, name, _, _ in files:
                 with directory(parent, private=parent == destination) as fd:
