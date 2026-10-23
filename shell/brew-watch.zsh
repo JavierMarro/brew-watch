@@ -35,7 +35,10 @@ _brew_watch_start() {
   add-zsh-hook -d precmd _brew_watch_start
   [[ -x "$_BREW_WATCH_COMMAND" ]] || return 0
   local fd
-  exec {fd}< <("$_BREW_WATCH_COMMAND" _startup </dev/null 2>&1)
+  # Launcher/interpreter diagnostics have not passed Python's output sanitizer.
+  exec {fd}< <({ "$_BREW_WATCH_COMMAND" _startup </dev/null ||
+    print -r -- 'brew-watch: check failed; run brew-watch status for details.'
+  } 2>/dev/null)
   zle -F "$fd" _brew_watch_ready
 }
 

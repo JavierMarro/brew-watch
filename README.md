@@ -51,7 +51,8 @@ prompt. The installer never runs Homebrew and does not require sudo.
 Setup copies the program into `~/.local/share/brew-watch`, creates a launcher at
 `~/.local/bin/brew-watch`, and appends a clearly marked block to `.zshrc` (under
 `ZDOTDIR` if set). The block defines the `brew-watch` command in interactive zsh,
-so changing your PATH is unnecessary. Existing startup content is preserved and
+so changing your PATH is unnecessary. Setup refuses a resulting `.zshrc` larger
+than its 1 MiB read limit so later removal remains possible. Existing startup content is preserved and
 backed up before any edit. Re-running setup updates this installation without
 duplicating the block.
 
@@ -97,8 +98,9 @@ The private `_startup` entry point is for the hook, not an additional public com
 The automatic check uses `brew update` followed by `brew outdated --json=v2`.
 **`brew update` changes Homebrew itself and its package information**, but does not
 upgrade your installed packages. A failed refresh stops the check.
-Automatic failures are retried only on a new terminal opening, after a one-hour
-cooldown. Multiple terminals share a lock and the last successful check timestamp.
+Automatic failures show a fixed message directing you to `status`; raw launcher and
+interpreter diagnostics are suppressed by the hook. Automatic failures are retried
+only on a new terminal opening, after a one-hour cooldown. Multiple terminals share a lock and the last successful check timestamp.
 Automatic reminders show at most 20 packages, with each package line limited to
 240 characters. Run `brew outdated --verbose` for the full list. The shell reads
 available output in small chunks without waiting for a complete line, and displays
@@ -189,6 +191,13 @@ read-only repository access, and checkout does not retain credentials. CI uses
 fake Homebrew too; a passing workflow is not a live Homebrew compatibility test.
 Repository administrators must separately require these checks in branch rules
 if they want merges blocked on failures.
+
+For repeatable terminal timings, run `python3 -I scripts/benchmark_startup.py`.
+It compares the hook enabled/disabled with fresh small and near-limit state,
+opening one or four terminals at once (10 batches per case). It reports median
+and maximum first-prompt and input-response latency in milliseconds. It uses
+temporary homes and never contacts real Homebrew. These are local measurements,
+not universal latency guarantees; run separately from other test workloads.
 
 ## License
 

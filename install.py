@@ -60,6 +60,8 @@ def setup(uninstall=False):
                      + "\nfunction brew-watch() { command \"$_BREW_WATCH_COMMAND\" \"$@\"; }\nsource "
                      + shlex.quote(str(hook)) + "\n").encode()
             updated = cleaned + b"\n" + BEGIN + block + END
+        if len(updated) > API["LIMIT"]:
+            raise Error("Updated .zshrc exceeds the size limit; startup files were not changed.")
         # Validate every destination before changing startup or installed files.
         for parent, name, _, _ in files:
             with directory(parent, private=parent == destination) as fd:
