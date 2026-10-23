@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -61,6 +62,10 @@ if args[0] == config.get("fail"):
 if args[0] == "outdated":
     sys.stdout.write(json.dumps(config["reply"]))
 if args[0] == "upgrade":
+    if config.get("upgrade_wait"):
+        (base / "upgrade-pid").write_text(str(os.getpid()))
+        while not (base / "release-upgrade").exists():
+            time.sleep(0.02)
     config["reply"] = {"formulae": [], "casks": []}
     config.update(config.get("after_upgrade", {}))
     (base / "config.json").write_text(json.dumps(config))
@@ -268,6 +273,115 @@ class BrewWatchTests(unittest.TestCase):
         self.assertEqual(self.run_command("_startup")[0], 1)
         self.assertEqual(self.calls(), [])
 
+    def test_rejects_unsafe_brew_parents_and_symlink_locations(self):
+        for mode in (0o770, 0o777):
+            self.bin.chmod(mode)
+            with self.assertRaisesRegex(bw.Error, "parent directory"):
+                bw.homebrew()
+        self.bin.chmod(0o700)
+        links = self.home / "links"
+        links.mkdir(mode=0o700)
+        (links / "brew").symlink_to(self.brew)
+        with mock.patch.dict(os.environ, {"PATH": str(links)}):
+            self.assertEqual(bw.homebrew()[0], str(self.brew.resolve()))
+            links.chmod(0o777)
+            with self.assertRaisesRegex(bw.Error, "parent directory"):
+                bw.homebrew()
+            links.chmod(0o700)
+            self.bin.chmod(0o777)
+            with self.assertRaisesRegex(bw.Error, "parent directory"):
+                bw.homebrew()
+        self.assertEqual(self.calls(), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS ACLs")
+    def test_acl_grants_are_rejected_on_state_lock_directories_and_brew(self):
+        self.assertEqual(self.run_command("_startup")[0], 0)
+        state = self.home / ".local/state/brew-watch/state.json"
+        for path, grant, operation in (
+            (state, "read", lambda: self.run_command("status")[0]),
+            (state.parent / "lock", "write", lambda: self.run_command("_startup")[0]),
+            (state.parent, "read", lambda: self.run_command("status")[0]),
+            (self.home, "write", lambda: self.run_command("status")[0]),
+        ):
+            with self.subTest(path=path, grant=grant):
+                subprocess.run(["/bin/chmod", "+a", f"everyone allow {grant}", str(path)], check=True)
+                try:
+                    self.assertEqual(operation(), 1)
+                finally:
+                    subprocess.run(["/bin/chmod", "-N", str(path)], check=True)
+        for path in (self.brew, self.bin):
+            subprocess.run(["/bin/chmod", "+a", "everyone allow write", str(path)], check=True)
+            try:
+                with self.assertRaisesRegex(bw.Error, "ACL"):
+                    bw.homebrew()
+            finally:
+                subprocess.run(["/bin/chmod", "-N", str(path)], check=True)
+        subprocess.run(["/bin/chmod", "+a", "everyone deny delete", str(self.home)], check=True)
+        try:
+            self.assertEqual(self.run_command("status")[0], 0)
+        finally:
+            subprocess.run(["/bin/chmod", "-N", str(self.home)], check=True)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS ACLs")
+    def test_inherited_acl_is_rejected_before_private_data_is_written(self):
+        subprocess.run(["/bin/chmod", "+a", "everyone allow read,file_inherit,directory_inherit",
+                        str(self.home)], check=True)
+        try:
+            with bw.directory(self.home) as fd:
+                with self.assertRaisesRegex(bw.Error, "ACL"):
+                    bw.write_file(fd, "private-backup", b"secret")
+            self.assertFalse((self.home / "private-backup").exists())
+            self.assertEqual(list(self.home.glob(".brew-watch-*")), [])
+            self.assertEqual(self.run_command("_startup")[0], 1)
+        finally:
+            subprocess.run(["/bin/chmod", "-RN", str(self.home)], check=True)
+
+    def test_acl_read_errors_fail_closed(self):
+        with bw.directory(self.home) as fd:
+            bw.ctypes.set_errno(bw.errno.EACCES)
+            with mock.patch.object(bw._acl, "acl_get_fd_np", return_value=None):
+                with self.assertRaisesRegex(bw.Error, "ACL"):
+                    bw.check_acl(fd)
+
+    def test_oversized_normalized_scan_preserves_history_and_records_error(self):
+        self.assertEqual(self.run_command("_startup")[0], 0)
+        previous = self.state()
+        rows = [{"name": f"p{i}", "installed_versions": ["一" * 256],
+                 "current_version": "二" * 256} for i in range(400)]
+        raw = json.dumps({"formulae": rows, "casks": []}, ensure_ascii=False).encode()
+        self.assertLess(len(raw), bw.LIMIT)
+        packages = bw.packages_from_json(raw)
+        for command in ("_startup", "freshen"):
+            with self.subTest(command=command):
+                later = time.time() + bw.INTERVAL + 1
+                scans = [packages] if command == "_startup" else [previous["packages"], packages]
+                with mock.patch.object(bw, "scan", side_effect=scans), \
+                        mock.patch.object(bw.time, "time", return_value=later):
+                    result, _, error = self.run_command(command, interactive=command == "freshen")
+                    self.assertEqual(result, 1)
+                    self.assertIn("size limit", error)
+                    state = self.state()
+                    self.assertEqual(state["packages"], previous["packages"])
+                    self.assertIn("size limit", state["error"])
+                    self.assertEqual(state["last_attempt"], int(later))
+                    if command == "_startup":
+                        self.assertEqual(state["last_check"], previous["last_check"])
+                    else:
+                        self.assertIn("Packages may have changed", state["error"])
+
+    def test_automatic_report_has_bounded_rows_and_line_lengths(self):
+        packages = [{"kind": "Formula", "name": f"p{i}", "installed": "1" * 26000,
+                     "available": "2", "pinned": False} for i in range(5000)]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            bw.report(packages, compact=True)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(sum(line.startswith("  Formula:") for line in lines), 20)
+        self.assertLessEqual(max(map(len, lines)), 240)
+        self.assertLess(len(output.getvalue()), 6000)
+        self.assertIn("5000", output.getvalue())
+        self.assertIn("brew outdated --verbose", output.getvalue())
+
     def test_private_state_and_symlink_hardlink_and_fifo_attacks(self):
         self.run_command("_startup")
         state_path = self.home / ".local/state/brew-watch/state.json"
@@ -428,6 +542,67 @@ class BrewWatchTests(unittest.TestCase):
         bw.capture(brew, env, ["update"])
         self.assertEqual(before, {sig: signal.getsignal(sig) for sig in before})
 
+    def test_upgrade_signals_retain_lock_and_persist_uncertain_outcome(self):
+        self.config["upgrade_wait"] = True
+        runner = self.home / "upgrade-runner.py"
+        runner.write_text("import runpy, sys\n"
+                          "sys.stdin.isatty = lambda: True\n"
+                          "sys.stdout.isatty = lambda: True\n"
+                          f"runpy.run_path({str(ROOT / 'brew_watch.py')!r}, run_name='__main__')\n")
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=sig):
+                self.configure()
+                for name in ("upgrade-pid", "release-upgrade"):
+                    (self.bin / name).unlink(missing_ok=True)
+                parent = subprocess.Popen([sys.executable, "-I", str(runner), "freshen"], env=self.env,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    deadline = time.monotonic() + 10
+                    while not (self.bin / "upgrade-pid").exists():
+                        self.assertLess(time.monotonic(), deadline, "Upgrade did not start")
+                        time.sleep(0.02)
+                    worker = int((self.bin / "upgrade-pid").read_text())
+                    self.assertIn("not yet verified", self.state()["error"])
+                    for _ in range(2):
+                        parent.send_signal(sig)
+                        time.sleep(0.1)
+                        self.assertIsNone(parent.poll())
+                        os.kill(worker, 0)
+                        with bw.directory(self.home / ".local/state/brew-watch", private=True) as fd:
+                            with self.assertRaisesRegex(bw.Error, "Another"):
+                                with bw.locked(fd):
+                                    pass
+                    (self.bin / "release-upgrade").touch()
+                    _, error = parent.communicate(timeout=10)
+                    self.assertEqual(parent.returncode, 1, error)
+                    self.assertIn("Packages may have changed", self.state()["error"])
+                    self.assert_process_stopped(worker)
+                    with bw.directory(self.home / ".local/state/brew-watch", private=True) as fd, bw.locked(fd):
+                        pass
+                finally:
+                    (self.bin / "release-upgrade").touch()
+                    parent.communicate(timeout=10)
+
+    def test_upgrade_spawn_signal_and_failure_restore_handlers(self):
+        brew, env = bw.homebrew()
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        real_popen = subprocess.Popen
+        processes = []
+        def spawning(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return process
+        with mock.patch.object(bw.subprocess, "Popen", side_effect=spawning):
+            with self.assertRaises(KeyboardInterrupt):
+                bw.upgrade(brew, env)
+        self.assert_process_stopped(processes[0].pid)
+        self.assertEqual(before, {sig: signal.getsignal(sig) for sig in before})
+        with mock.patch.object(bw.subprocess, "Popen", side_effect=OSError("cannot spawn")):
+            with self.assertRaises(OSError):
+                bw.upgrade(brew, env)
+        self.assertEqual(before, {sig: signal.getsignal(sig) for sig in before})
+
     def test_timeout_and_output_limit_cleanup_descendants(self):
         self.config["tree"] = True
         brew, env = bw.homebrew()
@@ -570,6 +745,49 @@ class BrewWatchTests(unittest.TestCase):
                 if attack in ("edit", "create"):
                     self.assertEqual(rc.read_bytes(), b"late edit")
                 self.assertEqual(list(self.home.glob(".brew-watch-*")), [])
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "requires the system zsh")
+    def test_zsh_partial_output_does_not_block_input(self):
+        producer = self.home / "notice"
+        producer.write_text(f"#!{sys.executable} -I\n"
+                            "import os, time\nfrom pathlib import Path\n"
+                            f"home = Path({str(self.home)!r})\n"
+                            "os.write(1, b'Notice: \\xe4')\n"
+                            "(home / 'chunk-sent').touch()\n"
+                            "while not (home / 'release-notice').exists(): time.sleep(0.02)\n"
+                            "os.write(1, b'\\xb8\\x80 done\\n')\n")
+        producer.chmod(0o700)
+        (self.home / ".zshrc").write_text(
+            "PS1='BW_READY> '\n"
+            f"typeset -g _BREW_WATCH_COMMAND={shlex.quote(str(producer))}\n"
+            f"source {shlex.quote(str(ROOT / 'shell/brew-watch.zsh'))}\n")
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execve("/bin/zsh", ["/bin/zsh", "-d", "-i"],
+                      dict(self.env, TERM="xterm-256color", ZDOTDIR=str(self.home)))
+        transcript = bytearray()
+        def until(condition):
+            deadline = time.monotonic() + 10
+            while not condition():
+                self.assertLess(time.monotonic(), deadline, repr(bytes(transcript)))
+                if select.select([terminal], [], [], 0.05)[0]:
+                    transcript.extend(os.read(terminal, 65536))
+        try:
+            until(lambda: b"BW_READY> " in transcript and (self.home / "chunk-sent").exists())
+            os.write(terminal, b"print BW_INPUT_OK\n")
+            until(lambda: b"\r\nBW_INPUT_OK\r\n" in transcript)
+            self.assertNotIn(b"Notice:", transcript)
+            (self.home / "release-notice").touch()
+            until(lambda: "Notice: 一 done".encode() in transcript)
+            self.assertNotIn(b"bad file descriptor", transcript)
+        finally:
+            (self.home / "release-notice").touch()
+            os.close(terminal)
+            try:
+                os.kill(pid, signal.SIGHUP)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
 
     @unittest.skipUnless(Path("/bin/zsh").exists(), "requires the system zsh")
     def test_real_zsh_delivers_async_notice_preserves_input_and_runs_freshen(self):

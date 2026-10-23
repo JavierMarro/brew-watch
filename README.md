@@ -65,6 +65,12 @@ paths, unrelated files at its destinations, and unsafe ownership. If you manage
 dotfiles through symlinks, inspect and adapt the shell integration manually rather
 than weakening those checks. `ZDOTDIR` must be an absolute path inside your home.
 
+Permission checks include macOS ACLs, including inherited grants. Write grants
+are refused on protected paths; private state and newly written private files
+also refuse read/search grants. This is conservative: even grants to the owner
+are refused, while deny-only entries are allowed. Setup never changes existing
+permissions or ACLs to make a check pass.
+
 ## Commands
 
 ```sh
@@ -90,6 +96,10 @@ The automatic check uses `brew update` followed by `brew outdated --json=v2`.
 upgrade your installed packages. A failed refresh never proceeds to an upgrade.
 Automatic failures are retried only on a new terminal opening, after a one-hour
 cooldown. Multiple terminals share a lock and the last successful check timestamp.
+Automatic reminders show at most 20 packages, with each package line limited to
+240 characters. Run `brew outdated --verbose` for the full list. The shell reads
+available output in small chunks without waiting for a complete line, and displays
+the bounded reminder when the worker closes its output.
 
 Illustrative output, not a scan of your machine:
 
@@ -138,6 +148,12 @@ No script can guarantee "maximum security" independently of the software it runs
   operation lock, including during `freshen`. An uncatchable kill (`SIGKILL`) or
   system crash cannot run cleanup. If post-upgrade verification fails, status
   warns that packages may have changed; its package count remains last-known data.
+- During the interactive upgrade, brew-watch defers its own interrupt, terminate,
+  and hangup handling until Homebrew exits, retaining the operation lock. Terminal
+  signals such as Ctrl-C still reach Homebrew normally. A signal sent only to
+  brew-watch does not forcibly stop an installer. Status records an unverified
+  upgrade before it starts, so an interruption cannot leave an apparently clean
+  result. SIGKILL and system crashes can still release the lock early.
 - State is private JSON, never executable code. Corrupt or unsafe state is refused
   without overwriting it. Inspect `~/.local/state/brew-watch/state.json`; to reset
   history, close other terminals/checks, preserve a copy if needed, and remove only
@@ -150,6 +166,11 @@ No script can guarantee "maximum security" independently of the software it runs
   inherited. Proxy and certificate settings are retained. Homebrew's own stored
   configuration still applies. Use Homebrew directly for workflows requiring
   other environment overrides.
+- Homebrew's executable, its resolved parent directories, and the original
+  executable directory retained in `PATH` must have safe ownership and no
+  group/world write permissions or ACL write grants. Some shared or admin-group
+  writable Homebrew installations will therefore be refused. Review those
+  permissions separately; brew-watch does not repair them automatically.
 - Cached package names are local data. Nothing is uploaded by brew-watch, but
   Homebrew's commands make their usual network requests.
 

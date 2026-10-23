@@ -3,6 +3,8 @@
 
 import argparse
 import contextlib
+import ctypes
+import errno
 import fcntl
 import json
 import os
@@ -22,6 +24,7 @@ INTERVAL = 14 * 24 * 60 * 60
 RETRY = 60 * 60
 LIMIT = 1024 * 1024
 NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
+_acl = None
 
 
 class Error(Exception):
@@ -35,6 +38,53 @@ def safe_text(value):
 class ArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         super().error(safe_text(message))
+
+
+def check_acl(fd, private=False):
+    """Reject unsafe macOS ACL grants, including inherited entries."""
+    global _acl
+    if sys.platform != "darwin":
+        raise Error("Permission validation requires macOS.")
+    if _acl is None:
+        library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        pointer = ctypes.c_void_p
+        for name, args, result in (
+            ("acl_get_fd_np", [ctypes.c_int, ctypes.c_int], pointer),
+            ("acl_get_entry", [pointer, ctypes.c_int, ctypes.POINTER(pointer)], ctypes.c_int),
+            ("acl_get_tag_type", [pointer, ctypes.POINTER(ctypes.c_int)], ctypes.c_int),
+            ("acl_get_permset", [pointer, ctypes.POINTER(pointer)], ctypes.c_int),
+            ("acl_get_perm_np", [pointer, ctypes.c_int], ctypes.c_int),
+            ("acl_free", [pointer], ctypes.c_int),
+        ):
+            function = getattr(library, name)
+            function.argtypes, function.restype = args, result
+        _acl = library
+    acl = _acl.acl_get_fd_np(fd, 0x100)  # ACL_TYPE_EXTENDED in sys/acl.h.
+    if not acl:
+        if ctypes.get_errno() == errno.ENOENT:  # No extended ACL on this open file.
+            return
+        raise Error("Unable to validate file ACL permissions; refusing access.")
+    try:
+        entry, permissions, tag = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_int()
+        which = 0  # ACL_FIRST_ENTRY; ACL_NEXT_ENTRY is -1 on macOS.
+        while True:
+            result = _acl.acl_get_entry(acl, which, ctypes.byref(entry))
+            if result == -1:
+                # Darwin uses EINVAL for the end of an ACL, including an empty ACL.
+                if ctypes.get_errno() == errno.EINVAL:
+                    break
+                raise Error("Unable to read file ACL permissions; refusing access.")
+            which = -1
+            if (_acl.acl_get_tag_type(entry, ctypes.byref(tag)) != 0
+                    or _acl.acl_get_permset(entry, ctypes.byref(permissions)) != 0):
+                raise Error("Unable to read file ACL permissions; refusing access.")
+            if tag.value == 1:  # ACL_EXTENDED_ALLOW; deny entries cannot grant access.
+                # Mutation rights; private files also reject read/search grants.
+                bits = range(1, 14) if private else (2, 4, 5, 6, 8, 10, 12, 13)
+                if any(_acl.acl_get_perm_np(permissions, 1 << bit) != 0 for bit in bits):
+                    raise Error("Unsafe ACL permissions; refusing access.")
+    finally:
+        _acl.acl_free(acl)
 
 
 def check_stat(info, directory=False, private=False):
@@ -58,6 +108,7 @@ def directory(path, private=False):
     fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW)
     try:
         check_stat(os.fstat(fd), directory=True)
+        check_acl(fd)
         for index, part in enumerate(parts):
             try:
                 os.mkdir(part, 0o700, dir_fd=fd)
@@ -67,6 +118,7 @@ def directory(path, private=False):
             try:
                 check_stat(os.fstat(child), directory=True,
                            private=private and index == len(parts) - 1)
+                check_acl(child, private=private and index == len(parts) - 1)
             except BaseException:
                 os.close(child)
                 raise
@@ -84,6 +136,7 @@ def read_file(fd, name, private=True):
         return None
     with os.fdopen(source, "rb") as stream:
         check_stat(os.fstat(stream.fileno()), private=private)
+        check_acl(stream.fileno(), private=private)
         data = stream.read(LIMIT + 1)
     if len(data) > LIMIT:
         raise Error("File exceeds the size limit.")
@@ -96,6 +149,7 @@ def write_file(fd, name, data, mode=0o600, *, expected=...):
     target = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, mode, dir_fd=fd)
     try:
         with os.fdopen(target, "wb") as stream:
+            check_acl(stream.fileno(), private=not mode & 0o077)
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
@@ -116,6 +170,7 @@ def locked(fd):
     lock = os.open("lock", os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | NOFOLLOW, 0o600, dir_fd=fd)
     try:
         check_stat(os.fstat(lock), private=True)
+        check_acl(lock, private=True)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -187,7 +242,8 @@ def load_state(fd):
 
 def save_state(fd, state):
     data = json.dumps(state, ensure_ascii=True).encode()
-    if len(data) > LIMIT:
+    # Leave space to record a later failure without discarding the last good result.
+    if len(data) > LIMIT - (2048 if state["error"] is None else 0):
         raise Error("Package report exceeds the state size limit.")
     write_file(fd, "state.json", data)
 
@@ -198,9 +254,28 @@ def homebrew():
         raise Error("Homebrew was not found on PATH. Load Homebrew before the brew-watch shell hook.")
     path = Path(found).absolute()
     real = path.resolve(strict=True)
-    info = real.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
-        raise Error("The Homebrew executable has unsafe ownership or permissions.")
+    parents = set()
+    for candidate in (path.parent, real.parent):
+        for parent in (candidate, *candidate.parents):
+            resolved = parent.resolve(strict=True)
+            parents.update((resolved, *resolved.parents))
+    for parent in sorted(parents, key=lambda item: len(item.parts)):
+        fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            if info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+                raise Error("A Homebrew parent directory has unsafe ownership or permissions.")
+            check_acl(fd)
+        finally:
+            os.close(fd)
+    fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+            raise Error("The Homebrew executable has unsafe ownership or permissions.")
+        check_acl(fd)
+    finally:
+        os.close(fd)
     # Keep proxy/certificate settings, but never inherit executable-injection variables.
     allowed = {"LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "USER", "LOGNAME",
                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy",
@@ -295,13 +370,38 @@ def scan(brew, env, refresh=True):
     return packages_from_json(capture(brew, env, ["outdated", "--json=v2"], timeout=60))
 
 
-def report(packages):
+def upgrade(brew, env):
+    interrupted = False
+
+    def on_signal(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    try:
+        for sig in previous:
+            signal.signal(sig, on_signal)
+        # Keep the terminal and operation lock until Homebrew exits; never kill an installer on a timer.
+        with subprocess.Popen([brew, "upgrade", "--ask"], cwd=Path.home(), env=env) as process:
+            result = process.wait()
+        if interrupted:
+            raise KeyboardInterrupt
+        return result
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def report(packages, compact=False):
     if not packages:
         return
     print("\nThese brews could use a little attention:\n")
-    for package in packages:
+    if compact:
+        print(f"Preview of {len(packages)} packages: up to 20 entries; long lines shortened.\n")
+    for package in packages[:20] if compact else packages:
         pinned = " [pinned; Homebrew will skip it]" if package["pinned"] else ""
-        print(safe_text(f"  {package['kind']}: {package['name']}  {package['installed']} -> {package['available']}{pinned}"))
+        line = safe_text(f"  {package['kind']}: {package['name']}  {package['installed']} -> {package['available']}{pinned}")
+        print(line[:237] + "..." if compact and len(line) > 240 else line)
     print("\nFreshen eligible packages: brew-watch freshen")
     print("Or inspect them: brew outdated --verbose")
     print("No packages have been upgraded.\n")
@@ -344,22 +444,22 @@ def operate(command, fd):
     verified = False
     try:
         brew, env = homebrew()
-        state["packages"] = scan(brew, env)
-        state["last_check"] = int(time.time())
-        state["error"] = None
-        save_state(fd, state)
+        candidate = dict(state, packages=scan(brew, env), last_check=int(time.time()), error=None)
+        save_state(fd, candidate)
+        state = candidate
         # shortcut: closing this terminal can lose the notice; add delivery acknowledgement if needed.
-        report(state["packages"])
+        report(state["packages"], compact=command == "_startup")
         if command == "freshen":
             if not state["packages"]:
                 print("Your brews are up to date.")
                 return 0
             # The caller explicitly requested upgrades; Homebrew owns its prompts and output.
             upgrade_started = True
-            result = subprocess.run([brew, "upgrade", "--ask"], cwd=Path.home(), env=env).returncode
-            state["packages"] = scan(brew, env, refresh=False)
-            state["last_check"] = int(time.time())
-            save_state(fd, state)
+            save_state(fd, dict(state, error="Upgrade started; packages may have changed. Outcome not yet verified."))
+            result = upgrade(brew, env)
+            candidate = dict(state, packages=scan(brew, env, refresh=False), last_check=int(time.time()), error=None)
+            save_state(fd, candidate)
+            state = candidate
             verified = True
             if result:
                 raise Error(f"Homebrew upgrade failed (exit {result}); some packages may have changed.")
