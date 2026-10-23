@@ -21,20 +21,26 @@ tap, or package installer as safe. This is a local tool, not a sandbox for Homeb
   configuration is retained. Analytics are disabled for these Homebrew invocations
   without editing the user's persistent Homebrew configuration.
 - Background commands have no interactive stdin. They run in process groups with
-  time and output bounds; failure/interruption terminates the group. Raw captured
-  stderr is never printed or stored.
+  time and output bounds. During captured checks in both automatic and manual
+  flows, interrupt, terminate, and hangup signals clean up the group before the
+  operation lock is released. Repeated signals do not interrupt cleanup, and
+  previous handlers are restored afterward. Raw captured stderr is never printed
+  or stored. SIGKILL and system crashes cannot be handled.
 - State lives in a user-owned mode-0700 directory, with mode-0600 files. File
   access rejects symlinks, hard links, special files, unsafe ownership, and unsafe
   permissions. Directory traversal beneath the home directory uses directory file
   descriptors and no-follow opens. An atomic replacement and fsync preserve the
   previous state if writing is interrupted.
 - The JSON schema and sizes are checked. Terminal controls and invisible format
-  characters are removed from brew-watch's own package/error output. Locks prevent
+  characters are removed from brew-watch's own package/error output, including
+  command-line parser errors in the tool and installer. Locks prevent
   simultaneous scans or upgrades across terminals, and failed checks retain the
   last successful result.
 - Setup is explicit, repeatable, and reversible. It backs up `.zshrc`, preserves
-  unrelated bytes, detects concurrent startup edits, and refuses unrelated files
-  at its installation paths. Development tests never activate the real hook.
+  unrelated bytes, revalidates contents and file safety immediately before
+  replacement, and refuses unrelated files at its installation paths. Detected
+  concurrent edits abort setup/removal without replacing the edited file.
+  Development tests never activate the real hook.
 
 ## Trust limits
 
@@ -45,6 +51,12 @@ isolate applications from other processes belonging to that same account. Homebr
 may execute its own configuration, tap logic, downloads, and package installer code.
 brew-watch does not validate or sandbox those internals. Homebrew itself may request
 administrator permission during a user-requested cask upgrade.
+
+Close editors of `.zshrc` before setup/removal. The installer lock cannot exclude
+an unrelated editor writing between the final check and atomic replacement.
+Backups contain the version read at setup start, not every concurrent edit.
+Process cleanup covers the captured command's process group; a descendant that
+deliberately creates a separate session is outside that boundary.
 
 Homebrew's normal interactive output is shown during explicit upgrades. Output
 sanitization applies to brew-watch's own captured reports, not to the trusted

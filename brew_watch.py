@@ -32,6 +32,11 @@ def safe_text(value):
     return "".join(c for c in str(value) if c.isprintable() and not unicodedata.category(c).startswith("C"))
 
 
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        super().error(safe_text(message))
+
+
 def check_stat(info, directory=False, private=False):
     valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
     if (not valid_type or info.st_uid != os.getuid()
@@ -85,7 +90,7 @@ def read_file(fd, name, private=True):
     return data
 
 
-def write_file(fd, name, data, mode=0o600):
+def write_file(fd, name, data, mode=0o600, *, expected=...):
     read_file(fd, name, private=False)
     temporary = ".brew-watch-" + secrets.token_hex(16)
     target = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, mode, dir_fd=fd)
@@ -94,6 +99,9 @@ def write_file(fd, name, data, mode=0o600):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        current = read_file(fd, name, private=False)
+        if expected is not ... and current != expected:
+            raise Error("Your .zshrc changed during setup; retry after saving your edits.")
         os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
         os.fsync(fd)
     finally:
@@ -218,13 +226,30 @@ def stop(process):
 
 
 def capture(brew, env, args, timeout=120):
-    process = subprocess.Popen([brew, *args], stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               cwd=Path.home(), env=env, start_new_session=True)
+    process = None
+    interrupted = False
+    stopping = False
+
+    def on_signal(signum, frame):
+        nonlocal interrupted
+        already_interrupted = interrupted
+        interrupted = True
+        # Defer during spawn; repeated signals must not interrupt group cleanup.
+        if process is not None and not stopping and not already_interrupted:
+            raise KeyboardInterrupt
+
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
     output = bytearray()
     size = 0
     deadline = time.monotonic() + timeout
     try:
+        for sig in previous:
+            signal.signal(sig, on_signal)
+        process = subprocess.Popen([brew, *args], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   cwd=Path.home(), env=env, start_new_session=True)
+        if interrupted:
+            raise KeyboardInterrupt
         with selectors.DefaultSelector() as selector:
             for pipe in (process.stdout, process.stderr):
                 os.set_blocking(pipe.fileno(), False)
@@ -232,7 +257,7 @@ def capture(brew, env, args, timeout=120):
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise Error("Homebrew check timed out; no packages were upgraded.")
+                    raise Error("Homebrew check timed out.")
                 for key, _ in selector.select(min(remaining, 1)):
                     chunk = os.read(key.fd, 65536)
                     if not chunk:
@@ -246,16 +271,22 @@ def capture(brew, env, args, timeout=120):
             try:
                 result = process.wait(timeout=max(0.001, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
-                raise Error("Homebrew check timed out; no packages were upgraded.") from None
+                raise Error("Homebrew check timed out.") from None
         if result:
             raise Error(f"Homebrew {args[0]} failed (exit {result}); see brew-watch status.")
         return bytes(output)
     except BaseException:
-        stop(process)
+        stopping = True
+        if process is not None:
+            stop(process)
         raise
     finally:
-        process.stdout.close()
-        process.stderr.close()
+        stopping = True
+        if process is not None:
+            process.stdout.close()
+            process.stderr.close()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def scan(brew, env, refresh=True):
@@ -309,6 +340,8 @@ def operate(command, fd):
             return 0
     state["last_attempt"] = now
     save_state(fd, state)
+    upgrade_started = False
+    verified = False
     try:
         brew, env = homebrew()
         state["packages"] = scan(brew, env)
@@ -322,26 +355,38 @@ def operate(command, fd):
                 print("Your brews are up to date.")
                 return 0
             # The caller explicitly requested upgrades; Homebrew owns its prompts and output.
+            upgrade_started = True
             result = subprocess.run([brew, "upgrade", "--ask"], cwd=Path.home(), env=env).returncode
             state["packages"] = scan(brew, env, refresh=False)
             state["last_check"] = int(time.time())
             save_state(fd, state)
+            verified = True
             if result:
                 raise Error(f"Homebrew upgrade failed (exit {result}); some packages may have changed.")
             print("Freshening complete. Packages still reported outdated:", len(state["packages"]))
         return 0
-    except (Error, OSError) as error:
-        message = str(error) if isinstance(error, Error) else "Unable to run Homebrew or save the result."
+    except (Error, OSError, KeyboardInterrupt) as error:
+        if isinstance(error, KeyboardInterrupt) and not upgrade_started:
+            raise
+        if isinstance(error, Error):
+            message = str(error)
+        elif isinstance(error, KeyboardInterrupt):
+            message = "Interrupted."
+        else:
+            message = "Unable to run Homebrew or save the result."
+        if upgrade_started and not verified:
+            message = "Packages may have changed; post-upgrade verification did not complete. " + message
         state["error"] = message
         save_state(fd, state)
         raise Error(message) from None
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Check Homebrew on terminal opening, at most once every 14 days.",
+    parser = ArgumentParser(prog="brew-watch", description="Check Homebrew on terminal opening, at most once every 14 days.",
                                      epilog="The automatic check refreshes Homebrew itself and metadata, never installed packages. "
                                      "freshen refreshes, previews, and upgrades eligible formulae and casks using Homebrew. "
                                      "See README.md for shell setup and removal.")
+    parser.color = False  # Python 3.14+; harmless on older supported interpreters.
     parser.add_argument("command", choices=("status", "freshen", "_startup"), metavar="{status,freshen}",
                         help="status: last result and next check; freshen: explicitly upgrade packages")
     args = parser.parse_args(argv)
@@ -350,11 +395,6 @@ def main(argv=None):
             raise Error("Run brew-watch as your normal user, never with sudo or elevated privileges.")
         if args.command == "freshen" and not (sys.stdin.isatty() and sys.stdout.isatty()):
             raise Error("freshen requires an interactive terminal; no upgrades were started.")
-        if args.command == "_startup":
-            def interrupted(signum, frame):
-                raise KeyboardInterrupt
-            signal.signal(signal.SIGTERM, interrupted)
-            signal.signal(signal.SIGHUP, interrupted)
         with directory(Path.home() / ".local/state/brew-watch", private=True) as fd:
             if args.command == "status":
                 return operate(args.command, fd)

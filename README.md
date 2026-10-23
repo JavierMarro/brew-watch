@@ -39,6 +39,12 @@ so changing your PATH is unnecessary. Existing startup content is preserved and
 backed up before any edit. Re-running setup updates this installation without
 duplicating the block.
 
+Save and close editors of `.zshrc` before setup or removal. Setup checks the file
+again immediately before replacement and aborts if its contents changed, leaving
+the edit in place. Its lock coordinates installers, not unrelated editors; an
+edit racing the final check and replacement cannot be excluded. Keep the printed
+backup until you have reviewed the result.
+
 The launcher pins the Python executable used during setup and enables Python's
 isolated mode. If that interpreter is removed, rerun setup using a working Python.
 Installing from a different checkout updates the same local installation.
@@ -117,6 +123,10 @@ No script can guarantee "maximum security" independently of the software it runs
   partially applied; use Homebrew's normal interaction to stop one.
 - Failure messages omit raw Homebrew output to avoid exposing secrets or terminal
   escapes. For diagnosis, run `brew update` or `brew outdated --verbose` yourself.
+- Interrupted captured checks terminate their process group before releasing the
+  operation lock, including during `freshen`. An uncatchable kill (`SIGKILL`) or
+  system crash cannot run cleanup. If post-upgrade verification fails, status
+  warns that packages may have changed; its package count remains last-known data.
 - State is private JSON, never executable code. Corrupt or unsafe state is refused
   without overwriting it. Inspect `~/.local/state/brew-watch/state.json`; to reset
   history, close other terminals/checks, preserve a copy if needed, and remove only
@@ -146,5 +156,12 @@ interactive zsh session through a pseudo-terminal. They never upgrade host packa
 or edit your real `.zshrc`. Live Homebrew refresh/upgrade and Apple Silicon hardware
 compatibility require separate verification; passing mocked tests does not establish
 either. The first implementation is a local install, not a published Homebrew formula.
+
+The GitHub Actions workflow runs these checks on macOS 15 Intel and ARM runners
+with Python 3.11 and 3.15. Actions are pinned to full commit IDs, the token has
+read-only repository access, and checkout does not retain credentials. CI uses
+fake Homebrew too; a passing workflow is not a live Homebrew compatibility test.
+Repository administrators must separately require these checks in branch rules
+if they want merges blocked on failures.
 
 MIT licensed; see [LICENSE](LICENSE).
