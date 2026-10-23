@@ -1,6 +1,14 @@
 # brew-watch
 
-A quiet terminal reminder to keep your Homebrew brews fresh.
+![brew-watch — Keep your brews from going stale.](assets/brew-watch-banner.svg)
+
+**Keep an eye on your Homebrew. Keep your brews fresh.**
+
+[macOS 15+](#requirements) · Python 3.11+ · zsh · [MIT licensed](LICENSE)
+
+Two years after installing Homebrew while learning to code, I discovered I was
+supposed to maintain its formulae and casks—and spent two hours updating 20-odd
+of them. brew-watch is the reminder I wish I’d had.
 
 Open an interactive zsh terminal. If 14 days have passed since the last successful
 check, brew-watch refreshes Homebrew and checks installed formulae and casks.
@@ -9,6 +17,9 @@ until you explicitly run `brew-watch freshen`.
 
 No menu-bar app, launchd schedule, telemetry, account, cloud service, or third-party
 Python packages. Oh My Zsh is optional.
+
+> **Pre-release.** Further audits and live Homebrew testing are pending. Review
+> the source and [verification limits](#development-and-verification) before installing.
 
 ## Requirements
 
@@ -164,4 +175,7 @@ fake Homebrew too; a passing workflow is not a live Homebrew compatibility test.
 Repository administrators must separately require these checks in branch rules
 if they want merges blocked on failures.
 
-MIT licensed; see [LICENSE](LICENSE).
+## License
+
+[MIT License](LICENSE). Copyright (c) 2026 Javier Martínez Romera and
+brew-watch contributors.
