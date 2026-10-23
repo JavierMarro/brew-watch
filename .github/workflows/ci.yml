@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-15]
+        python: ['3.11', '3.15']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Isolated tests, including the real zsh hook
+        run: python3 -I -m unittest discover -s tests -v
+      - name: Python compilation
+        run: python3 -I -m py_compile brew_watch.py install.py tests/test_brew_watch.py
+      - name: Shell syntax
+        run: /bin/zsh -n shell/brew-watch.zsh
+      - name: Whitespace checks
+        run: |
+          git diff --check
+          git show --format= --check HEAD

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Explicit, reversible local setup. Does not run Homebrew."""
 
-import argparse
 import contextlib
 import os
 from pathlib import Path
@@ -81,7 +80,7 @@ def setup(uninstall=False):
                 print("Preserved startup backup:", API["safe_text"](str(zsh_directory / backup)))
             else:
                 mode = 0o600
-            write_file(zfd, ".zshrc", updated, mode)
+            write_file(zfd, ".zshrc", updated, mode, expected=existing)
         if uninstall:
             for parent, name, _, _ in files:
                 with directory(parent, private=parent == destination) as fd:
@@ -92,7 +91,8 @@ def setup(uninstall=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Install brew-watch locally and add a marked .zshrc block. Never runs Homebrew.")
+    parser = API["ArgumentParser"](prog="install.py", description="Install brew-watch locally and add a marked .zshrc block. Never runs Homebrew.")
+    parser.color = False
     parser.add_argument("--uninstall", action="store_true", help="remove the marked block and only managed program files")
     args = parser.parse_args()
     try:
