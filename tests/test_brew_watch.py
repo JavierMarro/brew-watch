@@ -649,6 +649,17 @@ class BrewWatchTests(unittest.TestCase):
         backups = list(self.home.glob(".zshrc.brew-watch-backup-*"))
         self.assertTrue(any(path.read_bytes() == original for path in backups))
 
+    def test_installer_refuses_growth_beyond_read_limit_before_installing(self):
+        rc = self.home / ".zshrc"
+        original = b"#" + b"x" * (bw.LIMIT - 2) + b"\n"
+        rc.write_bytes(original)
+        with self.assertRaisesRegex(installer.Error, "exceeds the size limit"):
+            installer.setup()
+        self.assertEqual(rc.read_bytes(), original)
+        self.assertFalse((self.home / ".local/bin/brew-watch").exists())
+        self.assertFalse((self.home / ".local/share/brew-watch/startup.zsh").exists())
+        self.assertEqual(list(self.home.glob(".zshrc.brew-watch-backup-*")), [])
+
     def test_installer_refuses_unrelated_file_or_symlink_startup(self):
         target = self.home / ".local/bin"
         target.mkdir(parents=True, mode=0o700)
@@ -751,7 +762,8 @@ class BrewWatchTests(unittest.TestCase):
                             "os.write(1, b'Notice: \\xe4')\n"
                             "(home / 'chunk-sent').touch()\n"
                             "while not (home / 'release-notice').exists(): time.sleep(0.02)\n"
-                            "os.write(1, b'\\xb8\\x80 done\\n')\n")
+                            "os.write(1, b'\\xb8\\x80 done\\n')\n"
+                            "os.write(2, b'SECRET_DIAGNOSTIC\\x1b[2J\\n'); raise SystemExit(1)\n")
         producer.chmod(0o700)
         (self.home / ".zshrc").write_text(
             "PS1='BW_READY> '\n"
@@ -775,6 +787,9 @@ class BrewWatchTests(unittest.TestCase):
             self.assertNotIn(b"Notice:", transcript)
             (self.home / "release-notice").touch()
             until(lambda: "Notice: 一 done".encode() in transcript)
+            until(lambda: b"check failed; run brew-watch status" in transcript)
+            self.assertNotIn(b"SECRET_DIAGNOSTIC", transcript)
+            self.assertNotIn(b"\x1b[2J", transcript)
             self.assertNotIn(b"bad file descriptor", transcript)
         finally:
             (self.home / "release-notice").touch()

@@ -27,7 +27,8 @@ tap, or package installer as safe. This is a local tool, not a sandbox for Homeb
   time and output bounds. During checks, interrupt, terminate, and hangup
   signals clean up the group before the
   operation lock is released. Repeated signals do not interrupt cleanup, and
-  previous handlers are restored afterward. Raw captured stderr is never printed
+  previous handlers are restored afterward. The shell hook suppresses launcher
+  and interpreter stderr and emits a fixed failure notice instead. Raw captured stderr is never printed
   or stored. SIGKILL and system crashes cannot be handled.
 - State lives in a user-owned mode-0700 directory, with mode-0600 files. File
   access rejects symlinks, hard links, special files, unsafe ownership, and unsafe
