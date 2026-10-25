@@ -14,6 +14,13 @@ spec.loader.exec_module(live)
 
 
 class LiveHarnessTests(unittest.TestCase):
+    def test_renamed_fixture_gets_explicit_formula_trust(self):
+        with mock.patch.dict(live.bw, capture=mock.Mock()):
+            live.trust_renamed_fixture('/test/brew', {'HOME': '/test'})
+            live.bw['capture'].assert_called_once_with(
+                '/test/brew', {'HOME': '/test'},
+                ['trust', '--formula', 'brewwatch/recovery-test/bw-recovery-new'])
+
     def test_runner_guard_fails_before_homebrew_lookup(self):
         valid = dict(GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted',
                      GITHUB_EVENT_NAME='workflow_dispatch')
