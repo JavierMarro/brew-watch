@@ -42,6 +42,11 @@ workflow token has read-only contents access. Each job has a 20-minute limit.
 The harness tightens runner-owned Homebrew parent-directory permissions when
 needed to satisfy brew-watch's existing checks. Fixture setup confirms Homebrew's
 normal installation prompt through a PTY; automatic checks still have no stdin.
+Setup explicitly trusts the renamed test formula as well: trust granted to the
+old formula by installation does not cover the new name. This is limited to the
+fixture on the disposable runner; production brew-watch never grants trust.
+If the checkpoint is missed, logs include the worker exit code, the sanitized
+saved brew-watch error, and whether successful-check history advanced.
 The runner is discarded after the job, including fixture files and trust changes.
 
 ## Limits

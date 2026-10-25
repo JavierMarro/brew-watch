@@ -51,6 +51,11 @@ def commit(path, message):
         'commit', '-m', message)
 
 
+def trust_renamed_fixture(brew, env):
+    # Installing OLD does not grant trust to the distinct NEW formula.
+    bw['capture'](brew, env, ['trust', '--formula', f'{TAP}/{NEW}'])
+
+
 def formula(name, url, digest, checkpoint=''):
     classname = ''.join(part.capitalize() for part in name.split('-'))
     return f'''{checkpoint}
@@ -176,6 +181,7 @@ Migrator.prepend(BrewWatchCheckpoint)
         (origin / 'Formula' / f'{NEW}.rb').write_text(formula(NEW, archive.as_uri(), digest, checkpoint))
         (origin / 'formula_renames.json').write_text(json.dumps({OLD: NEW}))
         commit(origin, 'Rename fixture and pause after the real Cellar move')
+        trust_renamed_fixture(brew, env)
         armed.touch()
         baseline = dict(bw['empty_state'](), last_check=int(time.time()) - bw['INTERVAL'] - 1)
         with bw['directory'](state_path, private=True) as fd:
@@ -190,6 +196,11 @@ Migrator.prepend(BrewWatchCheckpoint)
             deadline = time.monotonic() + 110
             while not marker.exists():
                 if worker.poll() is not None or time.monotonic() >= deadline:
+                    record(f'Worker exit before checkpoint: {worker.poll()} (None means still running).')
+                    with bw['directory'](state_path, private=True) as fd:
+                        observed = bw['load_state'](fd)
+                    record('Saved brew-watch error: ' + bw['safe_text'](observed['error'] or 'none'))
+                    record('Successful check advanced: ' + str(observed['last_check'] != baseline['last_check']))
                     raise RuntimeError('Migration checkpoint was not reached; this is NOT a passing interruption test.')
                 time.sleep(.1)
             _, group = map(int, marker.read_text().split())
