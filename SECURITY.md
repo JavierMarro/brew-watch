@@ -6,10 +6,11 @@ tap, or package installer as safe. This is a local tool, not a sandbox for Homeb
 
 ## Safeguards
 
-- Homebrew execution is limited to `brew update` and
-  `brew outdated --json=v2`. brew-watch never directly invokes `upgrade`, `install`, or `sudo`.
-  Homebrew may perform migrations, repairs, or package installations and reinstalls
-  as part of its update process.
+- Homebrew execution is limited to `brew outdated --json=v2`. brew-watch never
+  invokes `update`, `upgrade`, `install`, `migrate`, or `sudo`.
+  Full auto-update is disabled; API metadata refresh is enabled explicitly.
+  Homebrew may write its API cache and make network requests. Third-party tap
+  definitions are not refreshed; cached API data may be used if refresh fails.
   Public commands are `status` and `--help`; neither contacts Homebrew.
 - Subprocess arguments are lists. Package names and versions are never evaluated,
   used to build shell commands, or passed back as executable arguments.

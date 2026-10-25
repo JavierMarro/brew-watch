@@ -11,11 +11,11 @@ supposed to maintain its formulae and casks—and spent two hours updating 20-od
 of them. brew-watch is the reminder I wish I’d had.
 
 Open an interactive zsh terminal. If 14 days have passed since the last successful
-check, brew-watch refreshes Homebrew and checks installed formulae and casks.
+check, brew-watch checks installed formulae and casks with `brew outdated`.
 It reports updates while preserving whatever you were typing. brew-watch never
 directly requests package upgrades or installations; manage upgrades through Homebrew.
-Homebrew may perform migrations, repairs, or package installations and reinstalls
-as part of its update process.
+API metadata refresh is enabled, without running `brew update`. Third-party taps
+use local definitions; Homebrew may fall back to cached metadata.
 
 No menu-bar app, launchd schedule, telemetry, account, cloud service, or third-party
 Python packages. Oh My Zsh is optional.
@@ -97,10 +97,18 @@ brew-watch --help
 Outside interactive zsh, the installed launcher is at `~/.local/bin/brew-watch`.
 The private `_startup` entry point is for the hook, not an additional public command.
 
-The automatic check uses `brew update` followed by `brew outdated --json=v2`.
-**`brew update` changes Homebrew itself and its package information.** Homebrew
-may also perform migrations, repairs, or package installations and reinstalls
-during that update. A failed refresh stops the check.
+The automatic check runs only `brew outdated --json=v2`, with
+`HOMEBREW_NO_AUTO_UPDATE=1` and `HOMEBREW_FORCE_API_AUTO_UPDATE=1`.
+This allows Homebrew to refresh API metadata for official formulae and casks
+without running the full `brew update`. It does not update Homebrew itself,
+refresh third-party Git taps, or request package migrations, installations, or upgrades.
+
+**Freshness limits:** third-party taps are checked against their local definitions;
+refresh those yourself with Homebrew when needed. API refresh follows Homebrew's
+cache policy, and Homebrew may fall back to cached data on network errors. A
+successful check means Homebrew returned a valid report, not that every definition
+was freshly downloaded. No separate version lookup service is used.
+
 Automatic failures show a fixed message directing you to `status`; raw launcher and
 interpreter diagnostics are suppressed by the hook. Automatic failures are retried
 only on a new terminal opening, after a one-hour cooldown. Multiple terminals share a lock and the last successful check timestamp.
@@ -118,6 +126,7 @@ These brews could use a little attention:
   Cask: example-app  3.0 -> 4.0
 
 Inspect them with Homebrew: brew outdated --verbose
+Uses Homebrew metadata; third-party taps may be stale.
 brew-watch did not request package upgrades or installations.
 ```
 
@@ -144,10 +153,9 @@ terminal. No Homebrew packages are removed or changed by setup/removal.
 See [SECURITY.md](SECURITY.md) for the trust boundaries and concrete safeguards.
 No script can guarantee "maximum security" independently of the software it runs.
 
-- The background refresh has a 120-second timeout; the package scan has a
-  60-second timeout. Output and stored state are size-limited.
+- The background package check has a 60-second timeout. Output and stored state are size-limited.
 - Failure messages omit raw Homebrew output to avoid exposing secrets or terminal
-  escapes. For diagnosis, run `brew update` or `brew outdated --verbose` yourself.
+  escapes. For diagnosis, run `brew outdated --verbose` yourself.
 - Interrupted captured checks terminate their process group before releasing the
   operation lock. An uncatchable kill (`SIGKILL`) or system crash cannot run cleanup.
 - State is private JSON, never executable code. Corrupt or unsafe state is refused
@@ -186,7 +194,7 @@ git diff --check
 
 Tests use isolated temporary homes and a fake Homebrew executable, including a real
 interactive zsh session through a pseudo-terminal. They never upgrade host packages
-or edit your real `.zshrc`. Live Homebrew refresh/check and Apple Silicon hardware
+or edit your real `.zshrc`. Live Homebrew API refresh/reporting and Apple Silicon hardware
 compatibility require separate verification; passing mocked tests does not establish
 either. The first implementation is a local install, not a published Homebrew formula.
 
@@ -204,9 +212,9 @@ and maximum first-prompt and input-response latency in milliseconds. It uses
 temporary homes and never contacts real Homebrew. These are local measurements,
 not universal latency guarantees; run separately from other test workloads.
 
-For the separate, manually triggered real Homebrew recovery workflow, see
-[Live Homebrew recovery check](docs/live-homebrew.md). It runs destructive
-interruption tests only on disposable GitHub-hosted macOS runners.
+For the separate, manually triggered live reporting workflow, see
+[Live Homebrew check](docs/live-homebrew.md). It runs on disposable GitHub-hosted
+macOS runners without installing a fixture or triggering a migration.
 
 ## License
 
