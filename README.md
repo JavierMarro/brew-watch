@@ -204,6 +204,10 @@ and maximum first-prompt and input-response latency in milliseconds. It uses
 temporary homes and never contacts real Homebrew. These are local measurements,
 not universal latency guarantees; run separately from other test workloads.
 
+For the separate, manually triggered real Homebrew recovery workflow, see
+[Live Homebrew recovery check](docs/live-homebrew.md). It runs destructive
+interruption tests only on disposable GitHub-hosted macOS runners.
+
 ## License
 
 [MIT License](LICENSE). Copyright (c) 2026 Javier Martínez Romera and

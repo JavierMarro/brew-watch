@@ -28,7 +28,7 @@ jobs:
       - name: Isolated tests, including the real zsh hook
         run: python3 -I -m unittest discover -s tests -v
       - name: Python compilation
-        run: python3 -I -m py_compile brew_watch.py install.py tests/test_brew_watch.py
+        run: python3 -I -m py_compile brew_watch.py install.py scripts/live_homebrew.py tests/test_brew_watch.py tests/test_live_homebrew.py
       - name: Shell syntax
         run: /bin/zsh -n shell/brew-watch.zsh
       - name: Whitespace checks
