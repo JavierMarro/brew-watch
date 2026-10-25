@@ -38,6 +38,9 @@ workflow token has read-only contents access. Each job has a 20-minute limit.
   an automatic retry succeeds, with the expected fixture payload and renamed
   installation receipt. If only an explicit `brew migrate` repairs it, the job
   remains **failed** and reports that manual recovery was necessary.
+  The repair check runs even when the automatic retry exits with an error. Logs
+  report presence of the old/new fixture payloads. Successful manual repair must
+  restore both the payload and receipt and pass another update/outdated scan.
 
 The harness tightens runner-owned Homebrew parent-directory permissions when
 needed to satisfy brew-watch's existing checks. Fixture setup confirms Homebrew's
@@ -55,5 +58,6 @@ A green run covers this instrumented formula-rename checkpoint on the recorded
 Homebrew revision. It does not establish recovery for every migration phase,
 cask installer, pkgconf rebuild, SIGKILL, power failure, or compromised tap.
 An initial setup/network failure is inconclusive about migration recovery.
-Local unit tests validate the runner guard and PTY confirmation only; they do not
-run this destructive integration test. The first hosted run is still required.
+Local unit tests validate the runner guard, PTY confirmation, and recovery-test
+control flow; they do not run this destructive integration test. Hosted runs are
+required to establish actual recovery behavior.
