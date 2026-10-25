@@ -7,7 +7,9 @@ tap, or package installer as safe. This is a local tool, not a sandbox for Homeb
 ## Safeguards
 
 - Homebrew execution is limited to `brew update` and
-  `brew outdated --json=v2`. It never invokes `upgrade`, `install`, or `sudo`.
+  `brew outdated --json=v2`. brew-watch never directly invokes `upgrade`, `install`, or `sudo`.
+  Homebrew may perform migrations, repairs, or package installations and reinstalls
+  as part of its update process.
   Public commands are `status` and `--help`; neither contacts Homebrew.
 - Subprocess arguments are lists. Package names and versions are never evaluated,
   used to build shell commands, or passed back as executable arguments.
@@ -44,7 +46,8 @@ tap, or package installer as safe. This is a local tool, not a sandbox for Homeb
   characters are removed from brew-watch's own package/error output, including
   command-line parser errors in the tool and installer. Locks prevent
   simultaneous scans across terminals, and failed checks retain the
-  last successful result.
+  last successful result. Future timestamps caused by a backward clock correction
+  remain readable; checks wait for their existing intervals and status reports the discrepancy.
 - A new scan replaces the in-memory successful snapshot only after saving it.
   Successful state leaves room for a later error message. Automatic reports are
   limited to 20 package lines of 240 characters each. The zsh callback reads one
@@ -66,8 +69,8 @@ installation must be trusted. brew-watch is not setuid and rejects root executio
 Processes running as the same user can alter the program or data; mode bits cannot
 isolate applications from other processes belonging to that same account. Homebrew
 may execute its own configuration, tap logic, downloads, and package installer code.
-brew-watch does not validate or sandbox those internals. Package upgrades are
-outside brew-watch's scope.
+brew-watch does not validate or sandbox those internals. brew-watch does not directly
+request package upgrades or installations.
 
 Close editors of `.zshrc` before setup/removal. The installer lock cannot exclude
 an unrelated editor writing between the final check and atomic replacement.

@@ -13,7 +13,9 @@ of them. brew-watch is the reminder I wish I’d had.
 Open an interactive zsh terminal. If 14 days have passed since the last successful
 check, brew-watch refreshes Homebrew and checks installed formulae and casks.
 It reports updates while preserving whatever you were typing. brew-watch never
-upgrades installed packages; manage upgrades directly through Homebrew.
+directly requests package upgrades or installations; manage upgrades through Homebrew.
+Homebrew may perform migrations, repairs, or package installations and reinstalls
+as part of its update process.
 
 No menu-bar app, launchd schedule, telemetry, account, cloud service, or third-party
 Python packages. Oh My Zsh is optional.
@@ -96,8 +98,9 @@ Outside interactive zsh, the installed launcher is at `~/.local/bin/brew-watch`.
 The private `_startup` entry point is for the hook, not an additional public command.
 
 The automatic check uses `brew update` followed by `brew outdated --json=v2`.
-**`brew update` changes Homebrew itself and its package information**, but does not
-upgrade your installed packages. A failed refresh stops the check.
+**`brew update` changes Homebrew itself and its package information.** Homebrew
+may also perform migrations, repairs, or package installations and reinstalls
+during that update. A failed refresh stops the check.
 Automatic failures show a fixed message directing you to `status`; raw launcher and
 interpreter diagnostics are suppressed by the hook. Automatic failures are retried
 only on a new terminal opening, after a one-hour cooldown. Multiple terminals share a lock and the last successful check timestamp.
@@ -115,12 +118,12 @@ These brews could use a little attention:
   Cask: example-app  3.0 -> 4.0
 
 Inspect them with Homebrew: brew outdated --verbose
-No packages have been upgraded.
+brew-watch did not request package upgrades or installations.
 ```
 
 Pinned formulae are labelled and left to Homebrew's upgrade rules. Homebrew normally
 excludes self-updating casks and casks with an unspecified latest version; brew-watch
-does not enable greedy mode. Package upgrades are outside brew-watch's scope.
+does not enable greedy mode. brew-watch does not directly request package upgrades or installations.
 
 ## Removal
 
@@ -150,7 +153,9 @@ No script can guarantee "maximum security" independently of the software it runs
 - State is private JSON, never executable code. Corrupt or unsafe state is refused
   without overwriting it. Inspect `~/.local/state/brew-watch/state.json`; to reset
   history, close other terminals/checks, preserve a copy if needed, and remove only
-  that file. Do not remove a live lock file.
+  that file. Do not remove a live lock file. A backward clock correction does not
+  invalidate history: status reports future timestamps, and automatic checks wait
+  until the saved check/retry interval has elapsed. Correct the system clock if needed.
 - A terminal closed before its check finishes may miss that reminder. Results
   remain available through `status`; the next automatic scan is due 14 days after
   the last successful scan. The tool does not persistently nag about old results.

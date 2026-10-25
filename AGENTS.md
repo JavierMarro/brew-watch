@@ -5,7 +5,7 @@
 - A terminal companion to Homebrew for macOS, initially targeting macOS 15+ on Intel and Apple Silicon. Homebrew's own platform support is separate.
 - On interactive zsh startup, check only when 14 days have elapsed since the last successful check. No launchd job, persistent daemon, menu-bar app, desktop notifications, cloud service, or telemetry.
 - Public interface: `brew-watch status` and `brew-watch --help`.
-- Automatic checks may run `brew update` and `brew outdated`. Never run `brew upgrade` or install packages. `brew update` updates Homebrew itself and its metadata.
+- Automatic checks may run `brew update` and `brew outdated`. Never directly request package upgrades or installations. `brew update` refreshes Homebrew and its metadata; Homebrew may also perform migrations, repairs, or package installations and reinstalls as part of that process.
 - Cover formulae and casks. Keep Homebrew's default exclusions for pinned and self-updating packages; do not enable greedy or force modes.
 - Use brewing language sparingly in messages; help must explain exactly what commands change.
 
@@ -13,7 +13,7 @@
 
 - Never invoke a shell to interpret subprocess arguments, use eval, source state files, interpolate package metadata into commands, download executable setup code, or invoke sudo directly.
 - Resolve the existing Homebrew executable; do not replace or shadow `brew`. Reject unsafe executable permissions. Never bypass Homebrew's confirmation or privilege checks.
-- Never run as root. Automatic processes must have no interactive stdin and must never upgrade packages.
+- Never run as root. Automatic processes must have no interactive stdin and must never directly request package upgrades or installations.
 - Keep state private, validate its schema and size, reject symlinks and unsafe ownership/permissions, lock concurrent operations, and replace state atomically.
 - Treat Homebrew output and stored data as untrusted. Prevent terminal control sequences in brew-watch's own output. Do not log environment variables, credentials, or raw command errors.
 - Bound background command duration and output. Clean up child processes on failure or timeout. A failed check must not count as a successful check; throttle retries.
