@@ -310,7 +310,8 @@ def homebrew():
                "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"}
     env = {key: value for key, value in os.environ.items() if key in allowed}
     env.update(HOME=str(Path.home()), PATH=str(executable_directory) + ":/usr/bin:/bin:/usr/sbin:/sbin",
-               HOMEBREW_NO_ANALYTICS="1", HOMEBREW_NO_AUTO_UPDATE="1", HOMEBREW_NO_ENV_HINTS="1")
+               HOMEBREW_NO_ANALYTICS="1", HOMEBREW_NO_AUTO_UPDATE="1",
+               HOMEBREW_FORCE_API_AUTO_UPDATE="1", HOMEBREW_NO_ENV_HINTS="1")
     return str(real), env
 
 
@@ -328,7 +329,7 @@ def stop(process):
     process.wait()
 
 
-def capture(brew, env, args, timeout=120):
+def capture(brew, env, args, timeout=60):
     process = None
     interrupted = False
     stopping = False
@@ -393,8 +394,7 @@ def capture(brew, env, args, timeout=120):
 
 
 def scan(brew, env):
-    capture(brew, env, ["update"])
-    return packages_from_json(capture(brew, env, ["outdated", "--json=v2"], timeout=60))
+    return packages_from_json(capture(brew, env, ["outdated", "--json=v2"]))
 
 
 def report(packages):
@@ -407,6 +407,7 @@ def report(packages):
         line = safe_text(f"  {package['kind']}: {package['name']}  {package['installed']} -> {package['available']}{pinned}")
         print(line[:237] + "..." if len(line) > 240 else line)
     print("\nInspect them with Homebrew: brew outdated --verbose")
+    print("Uses Homebrew metadata; third-party taps may be stale.")
     print("brew-watch did not request package upgrades or installations.\n")
 
 
@@ -418,6 +419,7 @@ def status(state):
     checked = state["last_check"]
     now = time.time()
     print("Last successful check:", timestamp(checked) if checked is not None else "never")
+    print("Metadata: API refresh enabled; third-party taps use local definitions. Cached data may be used.")
     print("Packages with updates at that check:", len(state["packages"]) if checked is not None else "unknown")
     if any(state[key] is not None and state[key] > now
            for key in ("last_check", "last_attempt")):
@@ -466,9 +468,9 @@ def operate(command, fd):
 
 def main(argv=None):
     parser = ArgumentParser(prog="brew-watch", description="Check Homebrew on terminal opening, at most once every 14 days.",
-                                     epilog="The automatic check runs brew update, then brew outdated --json=v2. "
+                                     epilog="The automatic check runs only brew outdated --json=v2, with API metadata refresh enabled. "
                                      "brew-watch never directly requests package upgrades or installations. "
-                                     "Homebrew may perform migrations, repairs, or package installations and reinstalls during its update. "
+                                     "It does not run brew update or refresh third-party taps. Homebrew may use cached metadata. "
                                      "See README.md for shell setup and removal.")
     parser.color = False  # Python 3.14+; harmless on older supported interpreters.
     parser.add_argument("command", choices=("status", "_startup"), metavar="{status}",

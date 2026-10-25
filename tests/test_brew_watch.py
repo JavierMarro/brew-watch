@@ -106,9 +106,9 @@ class BrewWatchTests(unittest.TestCase):
         self.assertIn("Formula: example-tool", output)
         self.assertIn("Cask: example-app", output)
         self.assertIn("brew-watch did not request package upgrades or installations", output)
-        self.assertEqual([call["args"] for call in self.calls()], [["update"], ["outdated", "--json=v2"]])
+        self.assertEqual([call["args"] for call in self.calls()], [["outdated", "--json=v2"]])
         self.assertEqual(self.run_command("_startup"), (0, "", ""))
-        self.assertEqual(len(self.calls()), 2)
+        self.assertEqual(len(self.calls()), 1)
         self.assertEqual(len(self.state()["packages"]), 2)
 
     def test_due_check_and_status_are_honest_about_freshness(self):
@@ -119,14 +119,14 @@ class BrewWatchTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertIn("on your next terminal opening", output)
             self.assertIn("Packages with updates at that check: 2", output)
-        self.assertEqual(len(self.calls()), 4)
+        self.assertEqual(len(self.calls()), 2)
 
     def test_backward_clock_preserves_history_and_resumes_after_interval(self):
         for failed in (False, True):
             with self.subTest(failed=failed):
                 path = self.home / ".local/state/brew-watch/state.json"
                 path.unlink(missing_ok=True)
-                self.config["fail"] = "update" if failed else None
+                self.config["fail"] = "outdated" if failed else None
                 self.configure()
                 saved_time = int(time.time())
                 with mock.patch.object(bw.time, "time", return_value=saved_time):
@@ -148,7 +148,7 @@ class BrewWatchTests(unittest.TestCase):
                 self.configure()
                 with mock.patch.object(bw.time, "time", return_value=saved_time + interval):
                     self.assertEqual(self.run_command("_startup")[0], 0)
-                self.assertEqual(len(self.calls()), calls + 2)
+                self.assertEqual(len(self.calls()), calls + 1)
 
     def test_timestamp_schema_still_rejects_invalid_values(self):
         with bw.directory(self.home / ".local/state/brew-watch", private=True) as fd:
@@ -170,7 +170,7 @@ class BrewWatchTests(unittest.TestCase):
     def test_failure_preserves_last_success_and_throttles_retries(self):
         self.run_command("_startup")
         before = self.state()
-        self.config["fail"] = "update"
+        self.config["fail"] = "outdated"
         self.configure()
         later = time.time() + bw.INTERVAL + 1
         with mock.patch.object(bw.time, "time", return_value=later):
@@ -181,7 +181,7 @@ class BrewWatchTests(unittest.TestCase):
             self.assertEqual(self.state()["last_check"], before["last_check"])
             self.assertEqual(self.state()["packages"], before["packages"])
             self.assertEqual(self.run_command("_startup"), (0, "", ""))
-        self.assertEqual([call["args"][0] for call in self.calls()], ["update", "outdated", "update"])
+        self.assertEqual([call["args"][0] for call in self.calls()], ["outdated", "outdated"])
 
     def test_missing_brew_and_no_updates(self):
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
@@ -193,7 +193,7 @@ class BrewWatchTests(unittest.TestCase):
         self.assertEqual(self.state()["packages"], [])
 
     def test_removed_upgrade_commands_are_rejected_before_any_work(self):
-        for command in ("freshen", "upgrade", "install"):
+        for command in ("freshen", "upgrade", "install", "update", "migrate"):
             with self.subTest(command=command):
                 with self.assertRaises(SystemExit) as result:
                     self.run_command(command)
@@ -208,7 +208,9 @@ class BrewWatchTests(unittest.TestCase):
                 bw.main(["--help"])
         self.assertEqual(result.exception.code, 0)
         self.assertIn("status", output.getvalue())
-        self.assertIn("never directly requests package upgrades or installations", output.getvalue())
+        self.assertIn("never directly requests package upgrades or installations", " ".join(output.getvalue().split()))
+        self.assertIn("does not run brew update", output.getvalue())
+        self.assertIn("cached metadata", output.getvalue())
         self.assertNotIn("freshen", output.getvalue())
         self.assertNotIn("_startup", output.getvalue())
         self.assertEqual(self.calls(), [])
@@ -224,7 +226,7 @@ class BrewWatchTests(unittest.TestCase):
         self.assertEqual(self.state()["last_check"], previous["last_check"])
         self.assertEqual(self.state()["packages"], previous["packages"])
         self.assertEqual([call["args"] for call in self.calls()],
-                         [["update"], ["outdated", "--json=v2"]] * 2)
+                         [["outdated", "--json=v2"]] * 2)
 
     def test_parser_errors_sanitize_options_and_program_names(self):
         hostile = "--bad\x1b[2J\r\n\x9b\u202e"
@@ -267,6 +269,7 @@ class BrewWatchTests(unittest.TestCase):
     def test_child_environment_drops_injection_and_never_bypasses_confirmation(self):
         with mock.patch.dict(os.environ, {"BASH_ENV": "evil", "RUBYOPT": "evil", "PYTHONPATH": "evil",
                                           "DYLD_INSERT_LIBRARIES": "evil", "HOMEBREW_NO_ASK": "1",
+                                          "HOMEBREW_NO_AUTO_UPDATE": "0", "HOMEBREW_FORCE_API_AUTO_UPDATE": "0",
                                           "HTTPS_PROXY": "http://proxy.example"}):
             self.assertEqual(self.run_command("_startup")[0], 0)
         env = self.calls()[0]["env"]
@@ -274,6 +277,8 @@ class BrewWatchTests(unittest.TestCase):
             self.assertNotIn(key, env)
         self.assertEqual(env["HTTPS_PROXY"], "http://proxy.example")
         self.assertEqual(env["HOMEBREW_NO_ANALYTICS"], "1")
+        self.assertEqual(env["HOMEBREW_NO_AUTO_UPDATE"], "1")
+        self.assertEqual(env["HOMEBREW_FORCE_API_AUTO_UPDATE"], "1")
 
     def test_rejects_unsafe_brew(self):
         self.brew.chmod(0o777)
@@ -554,7 +559,7 @@ class BrewWatchTests(unittest.TestCase):
             return process
         with mock.patch.object(bw.subprocess, "Popen", side_effect=started):
             with self.assertRaisesRegex(bw.Error, "timed out"):
-                bw.capture(brew, env, ["update"], timeout=0.2)
+                bw.capture(brew, env, ["outdated", "--json=v2"], timeout=0.2)
         pid = processes[0].pid
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
@@ -562,7 +567,7 @@ class BrewWatchTests(unittest.TestCase):
         self.config["overflow"] = True
         self.configure()
         with self.assertRaisesRegex(bw.Error, "size limit"):
-            bw.capture(brew, env, ["update"], timeout=3)
+            bw.capture(brew, env, ["outdated", "--json=v2"], timeout=3)
 
     def assert_process_stopped(self, pid):
         deadline = time.monotonic() + 5
@@ -627,14 +632,14 @@ class BrewWatchTests(unittest.TestCase):
             return process
         with mock.patch.object(bw.subprocess, "Popen", side_effect=spawning):
             with self.assertRaises(KeyboardInterrupt):
-                bw.capture(brew, env, ["update"])
+                bw.capture(brew, env, ["outdated", "--json=v2"])
         self.assert_process_stopped(processes[0].pid)
         self.assertEqual(before, {sig: signal.getsignal(sig) for sig in before})
         with mock.patch.object(bw.subprocess, "Popen", side_effect=OSError("cannot spawn")):
             with self.assertRaises(OSError):
-                bw.capture(brew, env, ["update"])
+                bw.capture(brew, env, ["outdated", "--json=v2"])
         self.assertEqual(before, {sig: signal.getsignal(sig) for sig in before})
-        bw.capture(brew, env, ["update"])
+        bw.capture(brew, env, ["outdated", "--json=v2"])
         self.assertEqual(before, {sig: signal.getsignal(sig) for sig in before})
 
     def test_timeout_and_output_limit_cleanup_descendants(self):
@@ -648,7 +653,7 @@ class BrewWatchTests(unittest.TestCase):
                     (self.bin / name).unlink(missing_ok=True)
                 try:
                     with self.assertRaisesRegex(bw.Error, "size limit" if overflow else "timed out"):
-                        bw.capture(brew, env, ["update"], timeout=5 if overflow else 2)
+                        bw.capture(brew, env, ["outdated", "--json=v2"], timeout=5 if overflow else 2)
                     for name in ("pid", "child-pid"):
                         self.assert_process_stopped(int((self.bin / name).read_text()))
                 finally:
@@ -876,7 +881,7 @@ class BrewWatchTests(unittest.TestCase):
             os.write(terminal, b"brew-watch freshen\n")
             until(b"invalid choice")
             self.assertEqual([call["args"] for call in self.calls()],
-                             [["update"], ["outdated", "--json=v2"]])
+                             [["outdated", "--json=v2"]])
             self.assertNotIn(b"bad file descriptor", transcript)
             self.assertEqual(len(self.state()["packages"]), 2)
         finally:

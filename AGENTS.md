@@ -5,8 +5,8 @@
 - A terminal companion to Homebrew for macOS, initially targeting macOS 15+ on Intel and Apple Silicon. Homebrew's own platform support is separate.
 - On interactive zsh startup, check only when 14 days have elapsed since the last successful check. No launchd job, persistent daemon, menu-bar app, desktop notifications, cloud service, or telemetry.
 - Public interface: `brew-watch status` and `brew-watch --help`.
-- Automatic checks may run `brew update` and `brew outdated`. Never directly request package upgrades or installations. `brew update` refreshes Homebrew and its metadata; Homebrew may also perform migrations, repairs, or package installations and reinstalls as part of that process.
-- Cover formulae and casks. Keep Homebrew's default exclusions for pinned and self-updating packages; do not enable greedy or force modes.
+- Automatic checks run only `brew outdated --json=v2`. Set `HOMEBREW_NO_AUTO_UPDATE=1` and `HOMEBREW_FORCE_API_AUTO_UPDATE=1` to allow API metadata refresh without a full update. Never invoke `brew update`, `upgrade`, `install`, or `migrate`. Third-party taps use local definitions; Homebrew may fall back to cached API metadata.
+- Cover formulae and casks. Keep Homebrew's default exclusions for pinned and self-updating packages; do not enable greedy or package force modes. The API-refresh environment flag is not a package force mode.
 - Use brewing language sparingly in messages; help must explain exactly what commands change.
 
 ## Security requirements

@@ -1,4 +1,4 @@
-name: Live Homebrew recovery
+name: Live Homebrew check
 
 on:
   workflow_dispatch:
@@ -7,15 +7,14 @@ permissions:
   contents: read
 
 jobs:
-  recovery:
-    name: ${{ matrix.os }} / ${{ matrix.scenario }}
+  report:
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
         os: [macos-15-intel, macos-15]
-        scenario: [signal, timeout]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -23,5 +22,5 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
-      - name: Real Homebrew migration and interruption recovery
-        run: python3 -I scripts/live_homebrew.py "${{ matrix.scenario }}"
+      - name: Real Homebrew outdated report
+        run: python3 -I scripts/live_homebrew.py
