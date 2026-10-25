@@ -14,6 +14,41 @@ spec.loader.exec_module(live)
 
 
 class LiveHarnessTests(unittest.TestCase):
+    def test_recovery_requires_intact_payload_and_renamed_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            keg = Path(tmp) / '1.0'
+            path = keg / 'libexec/payload.txt'
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'fixture')
+            receipt = keg / 'INSTALL_RECEIPT.json'
+            for content in ('{}', 'invalid', '{"source":{"path":"bw-recovery-old.rb"}}'):
+                receipt.write_text(content)
+                self.assertFalse(live.fixture_recovered(path, b'fixture'))
+            receipt.write_text('{"source":{"path":"bw-recovery-new.rb"}}')
+            self.assertTrue(live.fixture_recovered(path, b'fixture'))
+            self.assertFalse(live.fixture_recovered(path, b'other'))
+
+    def test_failed_retry_attempts_manual_repair_but_never_passes(self):
+        for repaired in (False, True):
+            with self.subTest(repaired=repaired), \
+                    mock.patch.dict(live.bw, main=mock.Mock(return_value=1),
+                                    capture=mock.Mock(), scan=mock.Mock()), \
+                    mock.patch.object(live, 'record'), \
+                    mock.patch.object(live, 'fixture_recovered', return_value=repaired):
+                path = mock.Mock()
+                self.assertEqual(live.check_recovery('/test/brew', {}, path, path, b'fixture'), 1)
+                live.bw['capture'].assert_called_once_with(
+                    '/test/brew', {}, ['migrate', 'brewwatch/recovery-test/bw-recovery-old'])
+                self.assertEqual(live.bw['scan'].call_count, int(repaired))
+
+    def test_successful_recovery_does_not_attempt_manual_repair(self):
+        with mock.patch.dict(live.bw, main=mock.Mock(return_value=0), capture=mock.Mock()), \
+                mock.patch.object(live, 'record'), \
+                mock.patch.object(live, 'fixture_recovered', return_value=True):
+            path = mock.Mock()
+            self.assertEqual(live.check_recovery('/test/brew', {}, path, path, b'fixture'), 0)
+            live.bw['capture'].assert_not_called()
+
     def test_renamed_fixture_gets_explicit_formula_trust(self):
         with mock.patch.dict(live.bw, capture=mock.Mock()):
             live.trust_renamed_fixture('/test/brew', {'HOME': '/test'})

@@ -56,6 +56,34 @@ def trust_renamed_fixture(brew, env):
     bw['capture'](brew, env, ['trust', '--formula', f'{TAP}/{NEW}'])
 
 
+def fixture_recovered(path, payload):
+    if not path.exists() or path.read_bytes() != payload:
+        return False
+    try:
+        receipt = json.loads((path.parents[1] / 'INSTALL_RECEIPT.json').read_text())
+        return Path(receipt['source']['path']).name == f'{NEW}.rb'
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def check_recovery(brew, env, old_payload, new_payload, payload):
+    retry = bw['main'](['_startup'])
+    record(f'Automatic retry exit: {retry}; old payload present: {old_payload.exists()}; '
+           f'new payload present: {new_payload.exists()}.')
+    if retry == 0 and fixture_recovered(new_payload, payload):
+        record('PASS: automatic retry recovered the renamed payload and receipt.')
+        return 0
+    record('FAIL: automatic recovery failed; checking explicit brew migrate repair on the runner.')
+    bw['capture'](brew, env, ['migrate', f'{TAP}/{OLD}'])
+    if fixture_recovered(new_payload, payload):
+        bw['scan'](brew, env)
+        record('Explicit brew migrate repaired the payload and receipt, and update/outdated passed. '
+               'Automatic recovery still FAILED.')
+    else:
+        record('FAIL: explicit brew migrate did not restore the expected payload and receipt.')
+    return 1
+
+
 def formula(name, url, digest, checkpoint=''):
     classname = ''.join(part.capitalize() for part in name.split('-'))
     return f'''{checkpoint}
@@ -234,18 +262,7 @@ Migrator.prepend(BrewWatchCheckpoint)
             with bw['directory'](state_path, private=True) as fd:
                 saved['last_attempt'] = int(time.time()) - bw['RETRY'] - 1
                 bw['save_state'](fd, saved)
-            if bw['main'](['_startup']) != 0:
-                raise RuntimeError('Automatic retry failed after interruption.')
-            if new_payload.exists() and new_payload.read_bytes() == payload:
-                receipt = json.loads((new_payload.parents[1] / 'INSTALL_RECEIPT.json').read_text())
-                if Path(receipt['source']['path']).name == f'{NEW}.rb':
-                    record('PASS: automatic retry recovered the renamed payload and receipt.')
-                    return 0
-            record('FAIL: automatic retry did not complete migration; checking explicit brew migrate repair.')
-            bw['capture'](brew, env, ['migrate', f'{TAP}/{OLD}'])
-            if new_payload.read_bytes() == payload:
-                record('Explicit brew migrate restored the fixture payload; automatic recovery still FAILED.')
-            return 1
+            return check_recovery(brew, env, old_payload, new_payload, payload)
         finally:
             armed.unlink(missing_ok=True)
             if worker.poll() is None:
