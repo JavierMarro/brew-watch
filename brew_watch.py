@@ -219,10 +219,10 @@ def load_state(fd):
         state = json.loads(raw)
         if not isinstance(state, dict) or set(state) != set(empty_state()):
             raise ValueError
-        now = time.time()
+        # Bound timestamps to year 9999, leaving room to display the next due date.
         for name in ("last_check", "last_attempt"):
             value = state[name]
-            if value is not None and (type(value) is not int or not 0 <= value <= now + 300):
+            if value is not None and (type(value) is not int or not 0 <= value <= 253402300799 - INTERVAL):
                 raise ValueError
         if state["error"] is not None and (not isinstance(state["error"], str) or len(state["error"]) > 256):
             raise ValueError
@@ -407,7 +407,7 @@ def report(packages):
         line = safe_text(f"  {package['kind']}: {package['name']}  {package['installed']} -> {package['available']}{pinned}")
         print(line[:237] + "..." if len(line) > 240 else line)
     print("\nInspect them with Homebrew: brew outdated --verbose")
-    print("No packages have been upgraded.\n")
+    print("brew-watch did not request package upgrades or installations.\n")
 
 
 def timestamp(value):
@@ -416,16 +416,23 @@ def timestamp(value):
 
 def status(state):
     checked = state["last_check"]
+    now = time.time()
     print("Last successful check:", timestamp(checked) if checked is not None else "never")
     print("Packages with updates at that check:", len(state["packages"]) if checked is not None else "unknown")
+    if any(state[key] is not None and state[key] > now
+           for key in ("last_check", "last_attempt")):
+        print("Clock discrepancy: saved history is ahead of the system clock. "
+              "Automatic checks wait for the saved check/retry interval; check your system clock.")
     due = checked + INTERVAL if checked is not None else 0
-    print("Next check:", "due now, on your next terminal opening" if due <= time.time()
+    if state["last_attempt"] is not None:
+        due = max(due, state["last_attempt"] + RETRY)
+    print("Next check:", "due now, on your next terminal opening" if due <= now
           else f"due {timestamp(due)}, on your next terminal opening")
     if state["error"]:
         print("Last attempt:", timestamp(state["last_attempt"]))
         print("Check error:", safe_text(state["error"]))
         retry = state["last_attempt"] + RETRY
-        if retry > time.time():
+        if retry > now:
             print("Automatic retry eligible:", timestamp(retry))
     print("Automatic reminders require the zsh hook; no background schedule is installed.")
 
@@ -459,8 +466,9 @@ def operate(command, fd):
 
 def main(argv=None):
     parser = ArgumentParser(prog="brew-watch", description="Check Homebrew on terminal opening, at most once every 14 days.",
-                                     epilog="The automatic check refreshes Homebrew itself and metadata, never installed packages. "
-                                     "brew-watch never upgrades installed packages. "
+                                     epilog="The automatic check runs brew update, then brew outdated --json=v2. "
+                                     "brew-watch never directly requests package upgrades or installations. "
+                                     "Homebrew may perform migrations, repairs, or package installations and reinstalls during its update. "
                                      "See README.md for shell setup and removal.")
     parser.color = False  # Python 3.14+; harmless on older supported interpreters.
     parser.add_argument("command", choices=("status", "_startup"), metavar="{status}",

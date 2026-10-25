@@ -105,7 +105,7 @@ class BrewWatchTests(unittest.TestCase):
         self.assertEqual(result, 0, error)
         self.assertIn("Formula: example-tool", output)
         self.assertIn("Cask: example-app", output)
-        self.assertIn("No packages have been upgraded", output)
+        self.assertIn("brew-watch did not request package upgrades or installations", output)
         self.assertEqual([call["args"] for call in self.calls()], [["update"], ["outdated", "--json=v2"]])
         self.assertEqual(self.run_command("_startup"), (0, "", ""))
         self.assertEqual(len(self.calls()), 2)
@@ -120,6 +120,45 @@ class BrewWatchTests(unittest.TestCase):
             self.assertIn("on your next terminal opening", output)
             self.assertIn("Packages with updates at that check: 2", output)
         self.assertEqual(len(self.calls()), 4)
+
+    def test_backward_clock_preserves_history_and_resumes_after_interval(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                path = self.home / ".local/state/brew-watch/state.json"
+                path.unlink(missing_ok=True)
+                self.config["fail"] = "update" if failed else None
+                self.configure()
+                saved_time = int(time.time())
+                with mock.patch.object(bw.time, "time", return_value=saved_time):
+                    self.assertEqual(self.run_command("_startup")[0], 1 if failed else 0)
+                original = path.read_bytes()
+                calls = len(self.calls())
+                interval = bw.RETRY if failed else bw.INTERVAL
+                for now in (saved_time - 3600, saved_time + interval - 1):
+                    with mock.patch.object(bw.time, "time", return_value=now):
+                        result, output, error = self.run_command("status")
+                        self.assertEqual(result, 0, error)
+                        if now < saved_time:
+                            self.assertIn("Clock discrepancy", output)
+                            self.assertNotIn("due now", output)
+                        self.assertEqual(self.run_command("_startup"), (0, "", ""))
+                    self.assertEqual(path.read_bytes(), original)
+                    self.assertEqual(len(self.calls()), calls)
+                self.config["fail"] = None
+                self.configure()
+                with mock.patch.object(bw.time, "time", return_value=saved_time + interval):
+                    self.assertEqual(self.run_command("_startup")[0], 0)
+                self.assertEqual(len(self.calls()), calls + 2)
+
+    def test_timestamp_schema_still_rejects_invalid_values(self):
+        with bw.directory(self.home / ".local/state/brew-watch", private=True) as fd:
+            for key in ("last_check", "last_attempt"):
+                for value in (-1, True, 1.5, "123", 10 ** 100):
+                    with self.subTest(key=key, value=value):
+                        state = dict(bw.empty_state(), **{key: value})
+                        bw.write_file(fd, "state.json", json.dumps(state).encode())
+                        with self.assertRaisesRegex(bw.Error, "corrupt"):
+                            bw.load_state(fd)
 
     def test_status_does_not_invoke_homebrew(self):
         result, output, _ = self.run_command("status")
@@ -169,7 +208,7 @@ class BrewWatchTests(unittest.TestCase):
                 bw.main(["--help"])
         self.assertEqual(result.exception.code, 0)
         self.assertIn("status", output.getvalue())
-        self.assertIn("never upgrades installed packages", output.getvalue())
+        self.assertIn("never directly requests package upgrades or installations", output.getvalue())
         self.assertNotIn("freshen", output.getvalue())
         self.assertNotIn("_startup", output.getvalue())
         self.assertEqual(self.calls(), [])
@@ -829,7 +868,7 @@ class BrewWatchTests(unittest.TestCase):
         try:
             until(b"BW_READY> ")
             os.write(terminal, b"print -r -- BW_TYPED_OK")
-            until(b"No packages have been upgraded.")
+            until(b"brew-watch did not request package upgrades or installations.")
             os.write(terminal, b"\n")
             until(b"\r\nBW_TYPED_OK\r\n")
             os.write(terminal, b"brew-watch status\n")
