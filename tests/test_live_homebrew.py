@@ -49,7 +49,12 @@ class LiveHarnessTests(unittest.TestCase):
                 connection.close()
 
     def test_cache_verification_rejects_missing_refresh_and_false_fallback(self):
-        for fault in (None, 'no_catalog', 'stale', 'no_proxy', 'empty_succeeds'):
+        errors = {'no_catalog': 'No populated', 'stale': 'not revalidated',
+                  'no_proxy': 'no requests', 'content': 'changed catalog',
+                  'timestamp': 'changed catalog', 'removed': 'changed catalog',
+                  'added': 'changed catalog', 'empty_succeeds': 'unexpectedly succeeded',
+                  'empty_no_proxy': 'before reaching'}
+        for fault in (None, *errors):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as tmp:
                 cache = Path(tmp)
                 catalog = cache / 'api/internal/packages.test.jws.json'
@@ -66,21 +71,39 @@ class LiveHarnessTests(unittest.TestCase):
                         os.utime(catalog, None)
                     elif stage == 3 and fault != 'no_proxy':
                         proxy.attempts += 1
+                        if fault == 'content':
+                            catalog.write_text('changed fixture placeholder')
+                        elif fault == 'timestamp':
+                            os.utime(catalog, None)
+                        elif fault == 'removed':
+                            catalog.unlink()
+                        elif fault == 'added':
+                            catalog.with_name('extra.jws.json').write_text('extra')
                     elif stage == 4:
-                        proxy.attempts += 1
+                        if fault != 'empty_no_proxy':
+                            proxy.attempts += 1
                         if fault != 'empty_succeeds':
                             raise live.bw['Error']('Blocked refresh')
                     return []
 
                 with mock.patch.dict(live.bw, scan=scan), \
-                        mock.patch.object(live, 'record'), \
+                        mock.patch.object(live, 'record') as record, \
                         mock.patch.object(live, 'blocked_refresh') as blocked:
                     blocked.return_value.__enter__.return_value = (
                         {'HOMEBREW_CACHE': str(cache)}, proxy)
                     if fault:
-                        with self.assertRaises(RuntimeError):
+                        with self.assertRaisesRegex(RuntimeError, errors[fault]):
                             live.verify_cache('/test/brew', {}, cache)
                     else:
                         live.verify_cache('/test/brew', {}, cache)
                         self.assertEqual(len(calls), 4)
                         self.assertEqual(calls[-1]['HOMEBREW_CACHE'], str(cache / 'empty-control'))
+                    if fault not in ('no_catalog', 'stale'):
+                        self.assertEqual(len(calls), 4)
+                        evidence = next(call.args[0] for call in record.call_args_list
+                                        if call.args[0].startswith('Fallback evidence:'))
+                        self.assertIn('rejected requests=' + ('0' if fault == 'no_proxy' else '1'), evidence)
+                        expected = {'content': 'content changed=1', 'timestamp': 'timestamps changed=1',
+                                    'removed': 'removed=1', 'added': 'added=1'}
+                        if fault in expected:
+                            self.assertIn(expected[fault], evidence)
