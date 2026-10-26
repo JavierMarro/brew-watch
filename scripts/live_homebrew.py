@@ -97,18 +97,32 @@ def verify_cache(brew, env, cache):
     before = age_catalogs(cache)
     with blocked_refresh(env) as (blocked, proxy):
         bw['scan'](brew, blocked)
-        if proxy.attempts == 0 or catalogs(cache) != before:
-            raise RuntimeError('Cached fallback was not demonstrated with a rejected refresh.')
-        record('PASS: refresh requests rejected; valid cached report returned; catalog unchanged.')
+        after = catalogs(cache)
+        common = before.keys() & after.keys()
+        record(f'Fallback evidence: rejected requests={proxy.attempts}; '
+               f'catalogs added={len(after.keys() - before.keys())}; '
+               f'removed={len(before.keys() - after.keys())}; '
+               f'content changed={sum(before[p][1:] != after[p][1:] for p in common)}; '
+               f'timestamps changed={sum(before[p][0] != after[p][0] for p in common)}.')
+        failures = []
+        if proxy.attempts == 0:
+            failures.append('Cached scan made no requests to the rejecting proxy')
+        if after != before:
+            failures.append('Cached scan changed catalog files or timestamps during rejected refresh')
+        if not failures:
+            record('PASS: refresh requests rejected; valid cached report returned; catalog unchanged.')
         attempts = proxy.attempts
         try:
             bw['scan'](brew, dict(blocked, HOMEBREW_CACHE=str(cache / 'empty-control')))
         except bw['Error']:
             if proxy.attempts == attempts:
-                raise RuntimeError('Empty-cache control failed before reaching the rejecting proxy.') from None
+                failures.append('Empty-cache control failed before reaching the rejecting proxy')
+            else:
+                record('PASS: rejected refresh with no cached catalog fails instead of reporting success.')
         else:
-            raise RuntimeError('Empty-cache blocked-refresh control unexpectedly succeeded.')
-        record('PASS: rejected refresh with no cached catalog fails instead of reporting success.')
+            failures.append('Empty-cache blocked-refresh control unexpectedly succeeded')
+        if failures:
+            raise RuntimeError('; '.join(failures) + '.')
 
 
 def main():

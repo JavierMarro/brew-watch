@@ -54,6 +54,12 @@ The test fails if Homebrew changes its signed-catalog layout or fallback behavio
 it must not silently skip a phase. Each command retains its production time and
 output limits. Raw command errors and package names are not published in summaries.
 
+If fallback verification fails after a valid report, the summary records rejected
+request counts and counts of added, removed, content-changed, and timestamp-changed
+catalogs. The empty-cache control still runs to distinguish a proxy problem from
+a cache change. Neither case is accepted as a pass; investigate the evidence
+before changing the expectations. No catalog paths or contents are logged.
+
 A pass verifies these cache behaviors on the recorded Homebrew version. It is not
 a guarantee that every later report is fresh: production accepts valid cached
 reports, which also start the 14-day interval. Third-party tap definitions remain
