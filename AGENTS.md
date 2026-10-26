@@ -3,7 +3,7 @@
 ## Product boundary
 
 - A terminal companion to Homebrew for macOS, initially targeting macOS 15+ on Intel and Apple Silicon. Homebrew's own platform support is separate.
-- On interactive zsh startup, check only when 14 days have elapsed since the last successful check. No launchd job, persistent daemon, menu-bar app, desktop notifications, cloud service, or telemetry.
+- On interactive zsh startup, check only when 14 days have elapsed since the last completed report. A valid cached report counts as completed; this is not verified metadata freshness. No launchd job, persistent daemon, menu-bar app, desktop notifications, cloud service, or telemetry.
 - Public interface: `brew-watch status` and `brew-watch --help`.
 - Automatic checks run only `brew outdated --json=v2`. Set `HOMEBREW_NO_AUTO_UPDATE=1` and `HOMEBREW_FORCE_API_AUTO_UPDATE=1` to allow API metadata refresh without a full update. Never invoke `brew update`, `upgrade`, `install`, or `migrate`. Third-party taps use local definitions; Homebrew may fall back to cached API metadata.
 - Cover formulae and casks. Keep Homebrew's default exclusions for pinned and self-updating packages; do not enable greedy or package force modes. The API-refresh environment flag is not a package force mode.

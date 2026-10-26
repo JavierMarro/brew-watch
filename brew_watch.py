@@ -418,8 +418,9 @@ def timestamp(value):
 def status(state):
     checked = state["last_check"]
     now = time.time()
-    print("Last successful check:", timestamp(checked) if checked is not None else "never")
+    print("Last completed report:", timestamp(checked) if checked is not None else "never")
     print("Metadata: API refresh enabled; third-party taps use local definitions. Cached data may be used.")
+    print("A cached report also starts the 14-day interval; metadata freshness is not verified.")
     print("Packages with updates at that check:", len(state["packages"]) if checked is not None else "unknown")
     if any(state[key] is not None and state[key] > now
            for key in ("last_check", "last_attempt")):
