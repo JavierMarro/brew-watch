@@ -11,6 +11,8 @@ tap, or package installer as safe. This is a local tool, not a sandbox for Homeb
   Full auto-update is disabled; API metadata refresh is enabled explicitly.
   Homebrew may write its API cache and make network requests. Third-party tap
   definitions are not refreshed; cached API data may be used if refresh fails.
+  A valid cached report starts the 14-day interval even when refresh failed.
+  Completion timestamps are not proof of metadata freshness.
   Public commands are `status` and `--help`; neither contacts Homebrew.
 - Subprocess arguments are lists. Package names and versions are never evaluated,
   used to build shell commands, or passed back as executable arguments.
@@ -27,7 +29,7 @@ tap, or package installer as safe. This is a local tool, not a sandbox for Homeb
   configuration is retained. Analytics are disabled for these Homebrew invocations
   without editing the user's persistent Homebrew configuration.
 - Background commands have no interactive stdin. They run in process groups with
-  time and output bounds. During checks, interrupt, terminate, and hangup
+  time and captured-output bounds. The output limit does not cap Homebrew downloads. During checks, interrupt, terminate, and hangup
   signals clean up the group before the
   operation lock is released. Repeated signals do not interrupt cleanup, and
   previous handlers are restored afterward. The shell hook suppresses launcher

@@ -10,8 +10,8 @@ Two years after installing Homebrew while learning to code, I discovered I was
 supposed to maintain its formulae and casks—and spent two hours updating 20-odd
 of them. brew-watch is the reminder I wish I’d had.
 
-Open an interactive zsh terminal. If 14 days have passed since the last successful
-check, brew-watch checks installed formulae and casks with `brew outdated`.
+Open an interactive zsh terminal. If 14 days have passed since the last completed
+report, brew-watch checks installed formulae and casks with `brew outdated`.
 It reports updates while preserving whatever you were typing. brew-watch never
 directly requests package upgrades or installations; manage upgrades through Homebrew.
 API metadata refresh is enabled, without running `brew update`. Third-party taps
@@ -89,8 +89,8 @@ brew-watch status
 brew-watch --help
 ```
 
-- **status** reads local history without contacting Homebrew: last successful
-  check, last-known outdated count, and the next check due. A due check runs only
+- **status** reads local history without contacting Homebrew: last completed
+  report, last-known outdated count, and the next check due. A due check runs only
   when a new interactive terminal opens. Status also shows the last check error.
 - **--help** explains the commands and the automatic check.
 
@@ -107,11 +107,14 @@ refresh third-party Git taps, or request package migrations, installations, or u
 refresh those yourself with Homebrew when needed. API refresh follows Homebrew's
 cache policy, and Homebrew may fall back to cached data on network errors. A
 successful check means Homebrew returned a valid report, not that every definition
-was freshly downloaded. No separate version lookup service is used.
+was freshly downloaded. A valid cached report also starts the 14-day interval,
+so a failed refresh can delay discovery until the next due check even after
+connectivity returns. `status` reports completion, not verified freshness.
+No separate version lookup service is used.
 
 Automatic failures show a fixed message directing you to `status`; raw launcher and
 interpreter diagnostics are suppressed by the hook. Automatic failures are retried
-only on a new terminal opening, after a one-hour cooldown. Multiple terminals share a lock and the last successful check timestamp.
+only on a new terminal opening, after a one-hour cooldown. Multiple terminals share a lock and the last completed report timestamp.
 Automatic reminders show at most 20 packages, with each package line limited to
 240 characters. Run `brew outdated --verbose` for the full list. The shell reads
 available output in small chunks without waiting for a complete line, and displays
@@ -153,7 +156,9 @@ terminal. No Homebrew packages are removed or changed by setup/removal.
 See [SECURITY.md](SECURITY.md) for the trust boundaries and concrete safeguards.
 No script can guarantee "maximum security" independently of the software it runs.
 
-- The background package check has a 60-second timeout. Output and stored state are size-limited.
+- The background package check has a 60-second timeout. Captured command output
+  and stored state are size-limited; these limits do not
+  cap network downloads. Homebrew manages its own downloads and cache.
 - Failure messages omit raw Homebrew output to avoid exposing secrets or terminal
   escapes. For diagnosis, run `brew outdated --verbose` yourself.
 - Interrupted captured checks terminate their process group before releasing the
@@ -164,9 +169,9 @@ No script can guarantee "maximum security" independently of the software it runs
   that file. Do not remove a live lock file. A backward clock correction does not
   invalidate history: status reports future timestamps, and automatic checks wait
   until the saved check/retry interval has elapsed. Correct the system clock if needed.
-- A terminal closed before its check finishes may miss that reminder. Results
-  remain available through `status`; the next automatic scan is due 14 days after
-  the last successful scan. The tool does not persistently nag about old results.
+- A terminal closed before its check finishes may miss that reminder. The saved count, timestamps, and error
+  remain available through `status` (not the saved package list); the next automatic scan is due 14 days after
+  the last completed report. The tool does not persistently nag about old results.
 - brew-watch deliberately passes a restricted environment to Homebrew. Custom
   executable-injection variables and `HOMEBREW_*` environment overrides are not
   inherited. Proxy and certificate settings are retained. Homebrew's own stored

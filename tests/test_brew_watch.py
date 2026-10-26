@@ -59,6 +59,8 @@ if config.get("overflow"):
 if args[0] == config.get("fail"):
     print("SECRET_TOKEN=never-display-this\x1b[2J", file=sys.stderr)
     sys.exit(7)
+if config.get("cached_warning"):
+    print("Cached fallback SECRET_TOKEN=never-display-this\x1b[2J", file=sys.stderr)
 if args[0] == "outdated":
     sys.stdout.write(json.dumps(config["reply"]))
 '''
@@ -110,6 +112,21 @@ class BrewWatchTests(unittest.TestCase):
         self.assertEqual(self.run_command("_startup"), (0, "", ""))
         self.assertEqual(len(self.calls()), 1)
         self.assertEqual(len(self.state()["packages"]), 2)
+
+    def test_valid_cached_report_starts_interval_without_exposing_warning(self):
+        self.config['cached_warning'] = True
+        self.configure()
+        code, output, error = self.run_command('_startup')
+        self.assertEqual(code, 0)
+        self.assertNotIn('SECRET_TOKEN', output + error)
+        self.assertNotIn('\x1b', output + error)
+        self.assertIsNotNone(self.state()['last_check'])
+        self.assertIsNone(self.state()['error'])
+        self.assertEqual(self.run_command('_startup'), (0, '', ''))
+        self.assertEqual(len(self.calls()), 1)
+        _, status, _ = self.run_command('status')
+        self.assertIn('Last completed report:', status)
+        self.assertIn('A cached report also starts the 14-day interval', status)
 
     def test_due_check_and_status_are_honest_about_freshness(self):
         self.run_command("_startup")
