@@ -93,7 +93,7 @@ def verify_cache(brew, env, cache):
     after = catalogs(cache)
     if any(path not in after or after[path][0] <= values[0] for path, values in before.items()):
         raise RuntimeError('Stale catalog was not revalidated; freshness was NOT verified.')
-    record('PASS: stale API catalogs revalidated (replacement or conditional response).')
+    record('PASS: stale-cache report parsed; catalog timestamps advanced (not proof of freshness).')
     before = age_catalogs(cache)
     with blocked_refresh(env) as (blocked, proxy):
         bw['scan'](brew, blocked)
@@ -107,10 +107,11 @@ def verify_cache(brew, env, cache):
         failures = []
         if proxy.attempts == 0:
             failures.append('Cached scan made no requests to the rejecting proxy')
-        if after != before:
-            failures.append('Cached scan changed catalog files or timestamps during rejected refresh')
+        # Homebrew may touch a cached catalog even when its contents are unchanged.
+        if {p: v[1:] for p, v in after.items()} != {p: v[1:] for p, v in before.items()}:
+            failures.append('Cached scan changed catalog files or contents during rejected refresh')
         if not failures:
-            record('PASS: refresh requests rejected; valid cached report returned; catalog unchanged.')
+            record('PASS: refresh requests rejected; valid cached report returned; catalog contents unchanged.')
         attempts = proxy.attempts
         try:
             bw['scan'](brew, dict(blocked, HOMEBREW_CACHE=str(cache / 'empty-control')))

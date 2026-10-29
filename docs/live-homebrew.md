@@ -36,11 +36,14 @@ Every phase must pass:
 1. **Empty cache:** a real outdated report parses and populated signed API catalog
    files appear in the temporary cache.
 2. **Stale cache:** those catalogs are dated 30 days in the past. Another scan must
-   advance their modification times, showing download or conditional revalidation.
+   return a valid report and advance their modification times. Timestamp movement
+   alone does not prove a successful download or conditional revalidation.
 3. **Rejected refresh with cache:** catalogs are dated again. A temporary loopback
    proxy returns HTTP 502 for every request. The scan must still produce a valid
-   report, proxy requests must be observed, and catalog timestamps/content must
-   remain unchanged. This demonstrates cached fallback, not fresh metadata.
+   report, proxy requests must be observed, and the catalog file set, sizes, and
+   SHA-256 hashes must remain unchanged. Timestamp-only changes are recorded but
+   allowed: Homebrew can touch cached files during failed refreshes. This
+   demonstrates cached fallback, not fresh metadata.
 4. **Rejected refresh without cache:** a separate empty cache must fail, and the
    proxy must observe requests. This guards against a test that never attempted
    to refresh metadata.
@@ -57,8 +60,8 @@ output limits. Raw command errors and package names are not published in summari
 If fallback verification fails after a valid report, the summary records rejected
 request counts and counts of added, removed, content-changed, and timestamp-changed
 catalogs. The empty-cache control still runs to distinguish a proxy problem from
-a cache change. Neither case is accepted as a pass; investigate the evidence
-before changing the expectations. No catalog paths or contents are logged.
+a content change. Missing proxy requests or changed catalog files/contents still
+fail verification. No catalog paths or contents are logged.
 
 A pass verifies these cache behaviors on the recorded Homebrew version. It is not
 a guarantee that every later report is fresh: production accepts valid cached
