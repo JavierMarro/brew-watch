@@ -51,10 +51,10 @@ class LiveHarnessTests(unittest.TestCase):
     def test_cache_verification_rejects_missing_refresh_and_false_fallback(self):
         errors = {'no_catalog': 'No populated', 'stale': 'not revalidated',
                   'no_proxy': 'no requests', 'content': 'changed catalog',
-                  'timestamp': 'changed catalog', 'removed': 'changed catalog',
+                  'removed': 'changed catalog',
                   'added': 'changed catalog', 'empty_succeeds': 'unexpectedly succeeded',
                   'empty_no_proxy': 'before reaching'}
-        for fault in (None, *errors):
+        for fault in (None, 'timestamp', *errors):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as tmp:
                 cache = Path(tmp)
                 catalog = cache / 'api/internal/packages.test.jws.json'
@@ -72,7 +72,7 @@ class LiveHarnessTests(unittest.TestCase):
                     elif stage == 3 and fault != 'no_proxy':
                         proxy.attempts += 1
                         if fault == 'content':
-                            catalog.write_text('changed fixture placeholder')
+                            catalog.write_text('SIGNED fixture placeholder')
                         elif fault == 'timestamp':
                             os.utime(catalog, None)
                         elif fault == 'removed':
@@ -91,13 +91,15 @@ class LiveHarnessTests(unittest.TestCase):
                         mock.patch.object(live, 'blocked_refresh') as blocked:
                     blocked.return_value.__enter__.return_value = (
                         {'HOMEBREW_CACHE': str(cache)}, proxy)
-                    if fault:
+                    if fault in errors:
                         with self.assertRaisesRegex(RuntimeError, errors[fault]):
                             live.verify_cache('/test/brew', {}, cache)
                     else:
                         live.verify_cache('/test/brew', {}, cache)
                         self.assertEqual(len(calls), 4)
                         self.assertEqual(calls[-1]['HOMEBREW_CACHE'], str(cache / 'empty-control'))
+                        self.assertTrue(any('catalog contents unchanged' in call.args[0]
+                                            for call in record.call_args_list))
                     if fault not in ('no_catalog', 'stale'):
                         self.assertEqual(len(calls), 4)
                         evidence = next(call.args[0] for call in record.call_args_list
