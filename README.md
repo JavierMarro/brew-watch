@@ -12,10 +12,13 @@ of them. brew-watch is the reminder I wish I’d had.
 
 Open an interactive zsh terminal. If 14 days have passed since the last completed
 report, brew-watch checks installed formulae and casks with `brew outdated`.
-It reports updates while preserving whatever you were typing. brew-watch never
-directly requests package upgrades or installations; manage upgrades through Homebrew.
-API metadata refresh is enabled, without running `brew update`. Third-party taps
-use local definitions; Homebrew may fall back to cached metadata.
+Cycling dots show when a check is running. If updates are available, a short
+reminder appears while preserving whatever you were typing. Use `brew-watch status`
+for the last result, next check date, and metadata details.
+
+brew-watch never requests package upgrades or installations. You decide when to
+maintain your packages through Homebrew. Automatic checks allow API metadata
+refresh without running `brew update`; cached metadata may still be used.
 
 No menu-bar app, launchd schedule, telemetry, account, cloud service, or third-party
 Python packages. Oh My Zsh is optional.
@@ -25,8 +28,8 @@ marked block in your `.zshrc` asks zsh to start it when a terminal opens. It cal
 Homebrew's existing commands, just as you would at the prompt. Removing that
 block disables automatic checks; the installed launcher can still be run manually.
 
-> **Pre-release.** Further audits and live Homebrew testing are pending. Review
-> the source and [verification limits](#development-and-verification) before installing.
+> **Pre-release.** Review the source and
+> [verification limits](#development-and-verification) before installing.
 
 ## Requirements
 
@@ -49,6 +52,12 @@ python3 -I install.py
 
 Open a **new terminal**. The first check runs automatically, without blocking the
 prompt. The installer never runs Homebrew and does not require sudo.
+
+While a due check runs, zsh shows “Automatically checking your formulae and casks”
+with dots cycling from one to three. You can keep typing. The indicator clears
+when the check finishes or fails; if nothing is outdated, no reminder follows.
+Terminals opened before the next check is due stay quiet. The indicator updates
+while zsh's line editor is active, not over the output of a command you are running.
 
 Setup copies the program into `~/.local/share/brew-watch`, creates a launcher at
 `~/.local/bin/brew-watch`, and appends a clearly marked block to `.zshrc` (under
@@ -123,15 +132,20 @@ the bounded reminder when the worker closes its output.
 Illustrative output, not a scan of your machine:
 
 ```text
-These brews could use a little attention:
+🍺 These brews could use a little attention:
+
+Preview of 2 packages: up to 20 entries; long lines shortened.
 
   Formula: example-tool  1.0 -> 2.0
   Cask: example-app  3.0 -> 4.0
 
-Inspect them with Homebrew: brew outdated --verbose
-Uses Homebrew metadata; third-party taps may be stale.
-brew-watch did not request package upgrades or installations.
+Inspect them with Homebrew: brew update && brew outdated --verbose
 ```
+
+The suggested command is for you to run manually: `brew update` updates Homebrew
+and package definitions, then `brew outdated --verbose` lists outdated packages
+only if the update succeeds. It does not upgrade installed packages. The automatic
+check never runs this command.
 
 Pinned formulae are labelled and left to Homebrew's upgrade rules. Homebrew normally
 excludes self-updating casks and casks with an unspecified latest version; brew-watch

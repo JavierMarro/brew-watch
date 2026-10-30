@@ -329,7 +329,7 @@ def stop(process):
     process.wait()
 
 
-def capture(brew, env, args, timeout=60):
+def capture(brew, env, args, timeout=60, *, progress=False):
     process = None
     interrupted = False
     stopping = False
@@ -346,6 +346,7 @@ def capture(brew, env, args, timeout=60):
     output = bytearray()
     size = 0
     deadline = time.monotonic() + timeout
+    next_progress = 0
     try:
         for sig in previous:
             signal.signal(sig, on_signal)
@@ -362,7 +363,11 @@ def capture(brew, env, args, timeout=60):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise Error("Homebrew check timed out.")
-                for key, _ in selector.select(min(remaining, 1)):
+                if progress and time.monotonic() >= next_progress:
+                    # Private hook protocol; never forward Homebrew output to ZLE.
+                    print("__BREW_WATCH_PROGRESS__", flush=True)
+                    next_progress = time.monotonic() + 0.6
+                for key, _ in selector.select(min(remaining, 0.6 if progress else 1)):
                     chunk = os.read(key.fd, 65536)
                     if not chunk:
                         selector.unregister(key.fileobj)
@@ -393,22 +398,20 @@ def capture(brew, env, args, timeout=60):
             signal.signal(sig, handler)
 
 
-def scan(brew, env):
-    return packages_from_json(capture(brew, env, ["outdated", "--json=v2"]))
+def scan(brew, env, *, progress=False):
+    return packages_from_json(capture(brew, env, ["outdated", "--json=v2"], progress=progress))
 
 
 def report(packages):
     if not packages:
         return
-    print("\nThese brews could use a little attention:\n")
+    print("\n🍺 These brews could use a little attention:\n")
     print(f"Preview of {len(packages)} packages: up to 20 entries; long lines shortened.\n")
     for package in packages[:20]:
         pinned = " [pinned; Homebrew will skip it]" if package["pinned"] else ""
         line = safe_text(f"  {package['kind']}: {package['name']}  {package['installed']} -> {package['available']}{pinned}")
         print(line[:237] + "..." if len(line) > 240 else line)
-    print("\nInspect them with Homebrew: brew outdated --verbose")
-    print("Uses Homebrew metadata; third-party taps may be stale.")
-    print("brew-watch did not request package upgrades or installations.\n")
+    print("\nInspect them with Homebrew: brew update && brew outdated --verbose\n")
 
 
 def timestamp(value):
@@ -438,6 +441,7 @@ def status(state):
         if retry > now:
             print("Automatic retry eligible:", timestamp(retry))
     print("Automatic reminders require the zsh hook; no background schedule is installed.")
+    print("brew-watch never requests package upgrades or installations.")
 
 
 def operate(command, fd):
@@ -454,7 +458,7 @@ def operate(command, fd):
     save_state(fd, state)
     try:
         brew, env = homebrew()
-        candidate = dict(state, packages=scan(brew, env), last_check=int(time.time()), error=None)
+        candidate = dict(state, packages=scan(brew, env, progress=True), last_check=int(time.time()), error=None)
         save_state(fd, candidate)
         state = candidate
         # shortcut: closing this terminal can lose the notice; add delivery acknowledgement if needed.
