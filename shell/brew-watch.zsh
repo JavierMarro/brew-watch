@@ -3,16 +3,23 @@
 (( ${+_BREW_WATCH_LOADED} )) && return 0
 typeset -g _BREW_WATCH_LOADED=1
 typeset -g _BREW_WATCH_OUTPUT=''
+typeset -gi _BREW_WATCH_PROGRESS=0
 zmodload zsh/system || return 0
 
 _brew_watch_ready() {
   emulate -L zsh
-  local fd=$1 chunk result
+  local fd=$1 chunk result marker=$'__BREW_WATCH_PROGRESS__\n'
+  local -a dots=('.' '..' '...')
   # Read one available chunk per callback; never wait for a line or for EOF.
   sysread -i "$fd" -s 4096 -t 0 chunk
   result=$?
   if (( result == 0 )); then
     _BREW_WATCH_OUTPUT+=$chunk
+    while [[ $_BREW_WATCH_OUTPUT == "$marker"* ]]; do
+      _BREW_WATCH_OUTPUT=${_BREW_WATCH_OUTPUT#"$marker"}
+      (( _BREW_WATCH_PROGRESS = _BREW_WATCH_PROGRESS % 3 + 1 ))
+      zle -M "Automatically checking your formulae and casks${dots[$_BREW_WATCH_PROGRESS]}"
+    done
     (( ${#_BREW_WATCH_OUTPUT} <= 16384 )) && return 0
     _BREW_WATCH_OUTPUT=$'brew-watch: reminder too large; run brew outdated --verbose.\n'
   elif (( result == 4 )); then
@@ -22,6 +29,10 @@ _brew_watch_ready() {
   fi
   zle -F "$fd"
   exec {fd}<&-
+  if (( _BREW_WATCH_PROGRESS )); then
+    zle -M ''
+    _BREW_WATCH_PROGRESS=0
+  fi
   if [[ -n $_BREW_WATCH_OUTPUT ]]; then
     zle -I
     print -rn -- "$_BREW_WATCH_OUTPUT"

@@ -107,7 +107,9 @@ class BrewWatchTests(unittest.TestCase):
         self.assertEqual(result, 0, error)
         self.assertIn("Formula: example-tool", output)
         self.assertIn("Cask: example-app", output)
-        self.assertIn("brew-watch did not request package upgrades or installations", output)
+        self.assertIn("🍺 These brews could use a little attention:", output)
+        self.assertIn("brew update && brew outdated --verbose", output)
+        self.assertNotIn("Uses Homebrew metadata", output)
         self.assertEqual([call["args"] for call in self.calls()], [["outdated", "--json=v2"]])
         self.assertEqual(self.run_command("_startup"), (0, "", ""))
         self.assertEqual(len(self.calls()), 1)
@@ -206,7 +208,9 @@ class BrewWatchTests(unittest.TestCase):
         self.config["reply"] = {"formulae": [], "casks": []}
         self.configure()
         with mock.patch.object(bw.time, "time", return_value=time.time() + bw.RETRY + 1):
-            self.assertEqual(self.run_command("_startup"), (0, "", ""))
+            result, output, error = self.run_command("_startup")
+            self.assertEqual((result, error), (0, ""))
+            self.assertEqual(set(output.splitlines()), {"__BREW_WATCH_PROGRESS__"})
         self.assertEqual(self.state()["packages"], [])
 
     def test_removed_upgrade_commands_are_rejected_before_any_work(self):
@@ -562,6 +566,7 @@ class BrewWatchTests(unittest.TestCase):
             result = subprocess.run([sys.executable, "-I", str(ROOT / "brew_watch.py"), "_startup"],
                                     env=self.env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
             self.assertEqual(self.calls(), [])
 
     def test_timeout_and_output_limit_terminate_worker(self):
@@ -820,6 +825,9 @@ class BrewWatchTests(unittest.TestCase):
         producer.write_text(f"#!{sys.executable} -I\n"
                             "import os, time\nfrom pathlib import Path\n"
                             f"home = Path({str(self.home)!r})\n"
+                            "os.write(1, b'__BREW_WATCH_PRO')\n"
+                            "time.sleep(0.1)\n"
+                            "os.write(1, b'GRESS__\\n')\n"
                             "os.write(1, b'Notice: \\xe4')\n"
                             "(home / 'chunk-sent').touch()\n"
                             "while not (home / 'release-notice').exists(): time.sleep(0.02)\n"
@@ -844,11 +852,15 @@ class BrewWatchTests(unittest.TestCase):
         try:
             until(lambda: b"BW_READY> " in transcript and (self.home / "chunk-sent").exists())
             os.write(terminal, b"print BW_INPUT_OK\n")
-            until(lambda: b"\r\nBW_INPUT_OK\r\n" in transcript)
+            until(lambda: b"BW_INPUT_OK\r\n" in transcript)
             self.assertNotIn(b"Notice:", transcript)
             (self.home / "release-notice").touch()
             until(lambda: "Notice: 一 done".encode() in transcript)
             until(lambda: b"check failed; run brew-watch status" in transcript)
+            os.write(terminal, b"print BW_PROGRESS=$_BREW_WATCH_PROGRESS\n")
+            until(lambda: b"BW_PROGRESS=0\r\n" in transcript)
+            self.assertIn(b"Automatically checking your formulae and casks", transcript)
+            self.assertNotIn(b"__BREW_WATCH_PRO", transcript)
             self.assertNotIn(b"SECRET_DIAGNOSTIC", transcript)
             self.assertNotIn(b"\x1b[2J", transcript)
             self.assertNotIn(b"bad file descriptor", transcript)
@@ -857,6 +869,54 @@ class BrewWatchTests(unittest.TestCase):
             os.close(terminal)
             try:
                 os.kill(pid, signal.SIGHUP)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "requires the system zsh")
+    def test_zsh_clears_progress_when_no_packages_are_outdated(self):
+        self.config.update(sleep=2, reply={"formulae": [], "casks": []})
+        self.configure()
+        (self.home / ".zshrc").write_text("PS1='BW_READY> '\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            installer.setup()
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execve("/bin/zsh", ["/bin/zsh", "-d", "-i"],
+                      dict(self.env, TERM="xterm-256color", ZDOTDIR=str(self.home)))
+        transcript = bytearray()
+        os.set_blocking(terminal, False)
+        deadline = time.monotonic() + 15
+        try:
+            while b"Automatically checking your formulae and casks" not in transcript:
+                self.assertLess(time.monotonic(), deadline, repr(bytes(transcript)))
+                if select.select([terminal], [], [], 0.1)[0]:
+                    transcript.extend(os.read(terminal, 65536))
+            state_path = self.home / ".local/state/brew-watch/state.json"
+            while not state_path.exists() or self.state()["last_check"] is None:
+                self.assertLess(time.monotonic(), deadline, repr(bytes(transcript)))
+                if select.select([terminal], [], [], 0.1)[0]:
+                    transcript.extend(os.read(terminal, 65536))
+            # Drain the final redraw before querying the completed callback once.
+            while select.select([terminal], [], [], 0.3)[0]:
+                self.assertLess(time.monotonic(), deadline, repr(bytes(transcript)))
+                transcript.extend(os.read(terminal, 65536))
+            os.write(terminal, b"print BW_PROGRESS=$_BREW_WATCH_PROGRESS\n")
+            while b"BW_PROGRESS=0\r\n" not in transcript:
+                self.assertLess(time.monotonic(), deadline, repr(bytes(transcript)))
+                if select.select([terminal], [], [], 0.2)[0]:
+                    transcript.extend(os.read(terminal, 65536))
+            self.assertIn(b"Automatically checking your formulae and casks..", transcript)
+            self.assertIn(b"Automatically checking your formulae and casks...", transcript)
+            self.assertNotIn(b"These brews", transcript)
+            self.assertNotIn(b"__BREW_WATCH_PROGRESS__", transcript)
+            self.assertEqual(len(self.calls()), 1)
+            self.assertEqual(self.state()["packages"], [])
+            self.assertIsNotNone(self.state()["last_check"])
+        finally:
+            os.close(terminal)
+            try:
+                os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             os.waitpid(pid, 0)
@@ -890,16 +950,20 @@ class BrewWatchTests(unittest.TestCase):
         try:
             until(b"BW_READY> ")
             os.write(terminal, b"print -r -- BW_TYPED_OK")
-            until(b"brew-watch did not request package upgrades or installations.")
+            until(b"Automatically checking your formulae and casks")
+            until(b"brew update && brew outdated --verbose")
             os.write(terminal, b"\n")
             until(b"\r\nBW_TYPED_OK\r\n")
             os.write(terminal, b"brew-watch status\n")
             until(b"Packages with updates at that check: 2")
+            os.write(terminal, b"print BW_PROGRESS=$_BREW_WATCH_PROGRESS\n")
+            until(b"BW_PROGRESS=0\r\n")
             os.write(terminal, b"brew-watch freshen\n")
             until(b"invalid choice")
             self.assertEqual([call["args"] for call in self.calls()],
                              [["outdated", "--json=v2"]])
             self.assertNotIn(b"bad file descriptor", transcript)
+            self.assertNotIn(b"__BREW_WATCH_PROGRESS__", transcript)
             self.assertEqual(len(self.state()["packages"]), 2)
         finally:
             os.close(terminal)
