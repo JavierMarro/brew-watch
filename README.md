@@ -7,8 +7,9 @@
 [macOS 15+](#requirements) · Python 3.11+ · zsh · [MIT licensed](LICENSE)
 
 Two years after installing Homebrew while learning to code, I discovered I was
-supposed to maintain its formulae and casks—and spent two hours updating 20-odd
-of them. brew-watch is the reminder I wish I’d had.
+supposed to maintain its formulae and casks. It only took six hours to update almost 30
+of them.
+brew-watch was created as the reminder I wish I’d had.
 
 Open an interactive zsh terminal. If 14 days have passed since the last completed
 report, brew-watch checks installed formulae and casks with `brew outdated`.
@@ -199,14 +200,17 @@ No script can guarantee "maximum security" independently of the software it runs
   The child `PATH` uses the validated, resolved executable directory so retargeting
   an original directory symlink cannot redirect helper commands. Resolved directory
   names containing `:` are refused because that character separates `PATH` entries.
-- Cached package names are local data. Nothing is uploaded by brew-watch, but
-  Homebrew's commands make their usual network requests.
+- Saved reports contain only the package count, timestamps, and any check error;
+  package names and versions are used only for the immediate reminder. Older
+  reports remain readable through `status` and are reduced to counts atomically
+  under the lock on the next terminal opening, without changing the check schedule.
+  Nothing is uploaded by brew-watch, but Homebrew makes its usual network requests.
 
 ## Development and verification
 
 ```sh
 python3 -I -m unittest discover -s tests -v
-python3 -I -m py_compile brew_watch.py install.py tests/test_brew_watch.py
+python3 -I -m py_compile brew_watch.py install.py scripts/*.py tests/*.py
 /bin/zsh -n shell/brew-watch.zsh
 git diff --check
 ```
@@ -225,11 +229,16 @@ Repository administrators must separately require these checks in branch rules
 if they want merges blocked on failures.
 
 For repeatable terminal timings, run `python3 -I scripts/benchmark_startup.py`.
-It compares the hook enabled/disabled with fresh small and near-limit state,
-opening one or four terminals at once (10 batches per case). It reports median
-and maximum first-prompt and input-response latency in milliseconds. It uses
-temporary homes and never contacts real Homebrew. These are local measurements,
-not universal latency guarantees; run separately from other test workloads.
+It compares the hook enabled/disabled with fresh compact state and near-limit
+legacy state (10 batches per case), plus due scans returning a large Unicode
+report (3 batches per case). Each case opens one or four terminals at once.
+Active cases repeatedly send input during progress and reminder delivery, require
+both to appear, and continue for three responses per terminal after the reminder.
+The benchmark checks that concurrent terminals run exactly one scan per batch.
+It reports median and maximum prompt/input latency in milliseconds and runs in CI
+with a generous 1,000 ms per-sample regression limit. That limit catches stalls;
+it is not a target or guarantee of acceptable interactive latency. All cases use
+temporary homes and fake Homebrew. Run separately from other test workloads.
 
 For the separate, manually triggered live reporting workflow, see
 [Live Homebrew check](docs/live-homebrew.md). It runs on disposable GitHub-hosted
