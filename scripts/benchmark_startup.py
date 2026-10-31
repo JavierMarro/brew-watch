@@ -27,9 +27,16 @@ def batch(env, count, *, active=False):
             start = time.perf_counter()
             pid, fd = pty.fork()
             if pid == 0:
-                os.execve('/bin/zsh', ['/bin/zsh', '-d', '-i'], env)
+                try:
+                    for inherited in sessions:
+                        os.close(inherited)
+                    os.execve('/bin/zsh', ['/bin/zsh', '-d', '-i'], env)
+                finally:
+                    os._exit(127)
             sessions[fd] = dict(pid=pid, start=start, sent=None, buffer=bytearray(),
                                 sequence=0, after_notice=0, ready_at=None, done=False)
+            # forkpty masters can be inheritable on older Python versions.
+            os.set_inheritable(fd, False)
         deadline = time.monotonic() + 15
         while not all(s['done'] for s in sessions.values()):
             if time.monotonic() > deadline:
@@ -74,13 +81,31 @@ def batch(env, count, *, active=False):
         time.sleep(.3)  # Let cached-state workers close before removing their home.
         return prompt_times, input_times
     finally:
-        for fd, s in sessions.items():
-            os.close(fd)
+        # Signal every shell before closing masters or waiting on any one shell.
+        for s in sessions.values():
             try:
                 os.kill(s['pid'], signal.SIGHUP)
             except ProcessLookupError:
                 pass
-            os.waitpid(s['pid'], 0)
+        pending = {s['pid'] for s in sessions.values()}
+        try:
+            for sig in (signal.SIGHUP, signal.SIGKILL):
+                if sig == signal.SIGKILL:
+                    for pid in pending:
+                        try:
+                            os.kill(pid, sig)
+                        except ProcessLookupError:
+                            pass
+                deadline = time.monotonic() + (0.2 if sig == signal.SIGHUP else 2)
+                while pending and time.monotonic() < deadline:
+                    pending = {pid for pid in pending if os.waitpid(pid, os.WNOHANG)[0] == 0}
+                    if pending:
+                        time.sleep(.02)
+            if pending:
+                raise RuntimeError('Benchmark shells did not exit during bounded cleanup')
+        finally:
+            for fd in sessions:
+                os.close(fd)
 
 
 def main():
