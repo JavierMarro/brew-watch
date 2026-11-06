@@ -28,7 +28,9 @@ def remove_block(data):
     if (start == 0 or data[start - 1:start] != b"\n"
             or end_start < start + len(BEGIN) or data[end_start - 1:end_start] != b"\n"):
         raise Error("Modified brew-watch startup block; inspect your .zshrc manually.")
-    return data[:start - 1] + data[end:]
+    prefix, suffix = data[:start - 1], data[end:]
+    separator = b"\n" if prefix and suffix and not prefix.endswith(b"\n") and not suffix.startswith(b"\n") else b""
+    return prefix + separator + suffix
 
 
 def setup(uninstall=False):

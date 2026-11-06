@@ -51,7 +51,10 @@ tap, or package installer as safe. This is a local tool, not a sandbox for Homeb
   simultaneous scans across terminals, and failed checks retain the
   last successful result. Future timestamps caused by a backward clock correction
   remain readable; checks wait for their existing intervals and status reports the discrepancy.
-- A new scan replaces the in-memory successful snapshot only after saving it.
+- Reports persist only counts, timestamps, and errors; names and versions remain
+  in memory for immediate display. Legacy reports are fully validated before
+  conversion to counts under the startup lock; status does not rewrite them.
+  A new scan replaces the in-memory successful snapshot only after saving it.
   Successful state leaves room for a later error message. Automatic reports are
   limited to 20 package lines of 240 characters each. The zsh callback reads one
   available chunk at a time and caps its buffer, rather than blocking on a line

@@ -208,16 +208,17 @@ def packages_from_json(raw):
 
 
 def empty_state():
-    return {"last_check": None, "last_attempt": None, "packages": [], "error": None}
+    return {"last_check": None, "last_attempt": None, "package_count": 0, "error": None}
 
 
-def load_state(fd):
+def load_state(fd, *, migrate=False):
     raw = read_file(fd, "state.json")
     if raw is None:
         return empty_state()
     try:
         state = json.loads(raw)
-        if not isinstance(state, dict) or set(state) != set(empty_state()):
+        legacy_keys = {"last_check", "last_attempt", "packages", "error"}
+        if not isinstance(state, dict) or set(state) not in (set(empty_state()), legacy_keys):
             raise ValueError
         # Bound timestamps to year 9999, leaving room to display the next due date.
         for name in ("last_check", "last_attempt"):
@@ -228,15 +229,22 @@ def load_state(fd):
             raise ValueError
         if state["error"] is not None and state["last_attempt"] is None:
             raise ValueError
-        rows = state["packages"]
-        if not isinstance(rows, list) or len(rows) > 20000:
-            raise ValueError
-        for row in rows:
-            if (not isinstance(row, dict) or set(row) != {"kind", "name", "installed", "available", "pinned"}
-                    or row["kind"] not in ("Formula", "Cask") or type(row["pinned"]) is not bool
-                    or any(not isinstance(row[key], str) or len(row[key]) > 26000
-                           for key in ("name", "installed", "available"))):
+        legacy = set(state) == legacy_keys
+        if legacy:
+            rows = state["packages"]
+            if not isinstance(rows, list) or len(rows) > 20000:
                 raise ValueError
+            for row in rows:
+                if (not isinstance(row, dict) or set(row) != {"kind", "name", "installed", "available", "pinned"}
+                        or row["kind"] not in ("Formula", "Cask") or type(row["pinned"]) is not bool
+                        or any(not isinstance(row[key], str) or len(row[key]) > 26000
+                               for key in ("name", "installed", "available"))):
+                    raise ValueError
+            state["package_count"] = len(state.pop("packages"))
+        if type(state["package_count"]) is not int or not 0 <= state["package_count"] <= 20000:
+            raise ValueError
+        if legacy and migrate:
+            save_state(fd, state)
         return state
     except (ValueError, TypeError, KeyError, RecursionError):
         raise Error("State is corrupt; inspect or remove only brew-watch's state.json to reset it.") from None
@@ -424,7 +432,7 @@ def status(state):
     print("Last completed report:", timestamp(checked) if checked is not None else "never")
     print("Metadata: API refresh enabled; third-party taps use local definitions. Cached data may be used.")
     print("A cached report also starts the 14-day interval; metadata freshness is not verified.")
-    print("Packages with updates at that check:", len(state["packages"]) if checked is not None else "unknown")
+    print("Packages with updates at that check:", state["package_count"] if checked is not None else "unknown")
     if any(state[key] is not None and state[key] > now
            for key in ("last_check", "last_attempt")):
         print("Clock discrepancy: saved history is ahead of the system clock. "
@@ -445,7 +453,7 @@ def status(state):
 
 
 def operate(command, fd):
-    state = load_state(fd)
+    state = load_state(fd, migrate=command != "status")
     if command == "status":
         status(state)
         return 0
@@ -458,11 +466,12 @@ def operate(command, fd):
     save_state(fd, state)
     try:
         brew, env = homebrew()
-        candidate = dict(state, packages=scan(brew, env, progress=True), last_check=int(time.time()), error=None)
+        packages = scan(brew, env, progress=True)
+        candidate = dict(state, package_count=len(packages), last_check=int(time.time()), error=None)
         save_state(fd, candidate)
         state = candidate
         # shortcut: closing this terminal can lose the notice; add delivery acknowledgement if needed.
-        report(state["packages"])
+        report(packages)
         return 0
     except (Error, OSError) as error:
         message = str(error) if isinstance(error, Error) else "Unable to run Homebrew or save the result."

@@ -113,7 +113,7 @@ class BrewWatchTests(unittest.TestCase):
         self.assertEqual([call["args"] for call in self.calls()], [["outdated", "--json=v2"]])
         self.assertEqual(self.run_command("_startup"), (0, "", ""))
         self.assertEqual(len(self.calls()), 1)
-        self.assertEqual(len(self.state()["packages"]), 2)
+        self.assertEqual(self.state()["package_count"], 2)
 
     def test_valid_cached_report_starts_interval_without_exposing_warning(self):
         self.config['cached_warning'] = True
@@ -198,7 +198,7 @@ class BrewWatchTests(unittest.TestCase):
             self.assertNotIn("SECRET_TOKEN", error + output)
             self.assertNotIn("\x1b", error + output)
             self.assertEqual(self.state()["last_check"], before["last_check"])
-            self.assertEqual(self.state()["packages"], before["packages"])
+            self.assertEqual(self.state()["package_count"], before["package_count"])
             self.assertEqual(self.run_command("_startup"), (0, "", ""))
         self.assertEqual([call["args"][0] for call in self.calls()], ["outdated", "outdated"])
 
@@ -211,7 +211,7 @@ class BrewWatchTests(unittest.TestCase):
             result, output, error = self.run_command("_startup")
             self.assertEqual((result, error), (0, ""))
             self.assertEqual(set(output.splitlines()), {"__BREW_WATCH_PROGRESS__"})
-        self.assertEqual(self.state()["packages"], [])
+        self.assertEqual(self.state()["package_count"], 0)
 
     def test_removed_upgrade_commands_are_rejected_before_any_work(self):
         for command in ("freshen", "upgrade", "install", "update", "migrate"):
@@ -245,7 +245,7 @@ class BrewWatchTests(unittest.TestCase):
         with mock.patch.object(bw.time, "time", return_value=time.time() + bw.INTERVAL + 1):
             self.assertEqual(self.run_command("_startup")[0], 1)
         self.assertEqual(self.state()["last_check"], previous["last_check"])
-        self.assertEqual(self.state()["packages"], previous["packages"])
+        self.assertEqual(self.state()["package_count"], previous["package_count"])
         self.assertEqual([call["args"] for call in self.calls()],
                          [["outdated", "--json=v2"]] * 2)
 
@@ -476,25 +476,84 @@ class BrewWatchTests(unittest.TestCase):
                 with self.assertRaisesRegex(bw.Error, "ACL"):
                     bw.check_acl(fd)
 
-    def test_oversized_normalized_scan_preserves_history_and_records_error(self):
-        self.assertEqual(self.run_command("_startup")[0], 0)
-        previous = self.state()
+    def test_large_unicode_scan_saves_only_count_and_still_reports(self):
         rows = [{"name": f"p{i}", "installed_versions": ["一" * 256],
                  "current_version": "二" * 256} for i in range(400)]
         raw = json.dumps({"formulae": rows, "casks": []}, ensure_ascii=False).encode()
         self.assertLess(len(raw), bw.LIMIT)
         packages = bw.packages_from_json(raw)
-        later = time.time() + bw.INTERVAL + 1
-        with mock.patch.object(bw, "scan", return_value=packages), \
-                mock.patch.object(bw.time, "time", return_value=later):
-            result, _, error = self.run_command("_startup")
-            self.assertEqual(result, 1)
-            self.assertIn("size limit", error)
-            state = self.state()
-            self.assertEqual(state["packages"], previous["packages"])
-            self.assertIn("size limit", state["error"])
-            self.assertEqual(state["last_attempt"], int(later))
-            self.assertEqual(state["last_check"], previous["last_check"])
+        with mock.patch.object(bw, "scan", return_value=packages):
+            result, output, error = self.run_command("_startup")
+        self.assertEqual(result, 0, error)
+        self.assertIn("Preview of 400 packages", output)
+        self.assertEqual(self.state()["package_count"], 400)
+        self.assertNotIn("packages", self.state())
+        self.assertLess(len(json.dumps(self.state())), 256)
+
+    def test_legacy_state_migrates_under_startup_lock_without_scanning(self):
+        legacy = dict(last_check=int(time.time()), last_attempt=int(time.time()), error=None,
+                      packages=[dict(kind="Formula", name="private-tool", installed="1",
+                                     available="2", pinned=False)])
+        with bw.directory(self.home / ".local/state/brew-watch", private=True) as fd:
+            original = json.dumps(legacy).encode()
+            bw.write_file(fd, "state.json", original)
+            self.assertIn("at that check: 1", self.run_command("status")[1])
+            self.assertEqual(bw.read_file(fd, "state.json"), original)
+            with bw.locked(fd):
+                self.assertEqual(self.run_command("_startup"), (0, "", ""))
+                self.assertEqual(bw.read_file(fd, "state.json"), original)
+            self.assertEqual(self.run_command("_startup"), (0, "", ""))
+            self.assertEqual(self.state(), dict(last_check=legacy["last_check"],
+                             last_attempt=legacy["last_attempt"], error=None, package_count=1))
+        self.assertEqual(self.calls(), [])
+
+    def test_invalid_count_or_legacy_rows_are_not_migrated(self):
+        invalid = [dict(bw.empty_state(), package_count=value)
+                   for value in (-1, True, 1.5, "2", 20001)]
+        legacy = dict(last_check=1, last_attempt=1, error=None, packages=[])
+        invalid.extend(dict(legacy, packages=rows) for rows in
+                       (None, {}, [None], [dict(kind="Formula", name="p")]))
+        invalid.append(dict(legacy, package_count=0))
+        with bw.directory(self.home / ".local/state/brew-watch", private=True) as fd:
+            for state in invalid:
+                with self.subTest(state=state):
+                    original = json.dumps(state).encode()
+                    bw.write_file(fd, "state.json", original)
+                    self.assertEqual(self.run_command("_startup")[0], 1)
+                    self.assertEqual(bw.read_file(fd, "state.json"), original)
+        self.assertEqual(self.calls(), [])
+
+    def test_failed_migration_preserves_legacy_history(self):
+        legacy = dict(last_check=int(time.time()), last_attempt=int(time.time()),
+                      error="Previous check failed", packages=[])
+        with bw.directory(self.home / ".local/state/brew-watch", private=True) as fd:
+            original = json.dumps(legacy).encode()
+            bw.write_file(fd, "state.json", original)
+            with mock.patch.object(bw.os, "replace", side_effect=OSError("disk failure")):
+                self.assertEqual(self.run_command("_startup")[0], 1)
+            self.assertEqual(bw.read_file(fd, "state.json"), original)
+            self.assertEqual(self.run_command("_startup"), (0, "", ""))
+            self.assertEqual(self.state()["error"], legacy["error"])
+            self.assertEqual(self.state()["last_attempt"], legacy["last_attempt"])
+        self.assertEqual(self.calls(), [])
+
+    def test_failed_result_save_keeps_previous_count_and_check_time(self):
+        self.assertEqual(self.run_command("_startup")[0], 0)
+        previous = self.state()
+        original_save = bw.save_state
+        def saving(fd, state):
+            if state["package_count"] == 0 and state["last_check"] != previous["last_check"]:
+                raise OSError("disk failure")
+            original_save(fd, state)
+        with mock.patch.object(bw, "scan", return_value=[]), \
+                mock.patch.object(bw, "save_state", side_effect=saving), \
+                mock.patch.object(bw.time, "time", return_value=time.time() + bw.INTERVAL + 1):
+            code, output, _ = self.run_command("_startup")
+        self.assertEqual(code, 1)
+        self.assertNotIn("These brews", output)
+        self.assertEqual(self.state()["package_count"], previous["package_count"])
+        self.assertEqual(self.state()["last_check"], previous["last_check"])
+        self.assertIsNotNone(self.state()["error"])
 
     def test_automatic_report_has_bounded_rows_and_line_lengths(self):
         packages = [{"kind": "Formula", "name": f"p{i}", "installed": "1" * 26000,
@@ -715,6 +774,27 @@ class BrewWatchTests(unittest.TestCase):
         backups = list(self.home.glob(".zshrc.brew-watch-backup-*"))
         self.assertTrue(any(path.read_bytes() == original for path in backups))
 
+    def test_installer_keeps_appended_commands_separate_on_reinstall_and_removal(self):
+        rc = self.home / ".zshrc"
+        for ending in (b"", b"\n"):
+            for reinstall in (False, True):
+                with self.subTest(ending=ending, reinstall=reinstall):
+                    original = b"export FIRST=one" + ending
+                    rc.write_bytes(original)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        installer.setup()
+                        with rc.open("ab") as stream:
+                            stream.write(b"export SECOND=two\n")
+                        if reinstall:
+                            installer.setup()
+                        installer.setup(uninstall=True)
+                    self.assertEqual(rc.read_bytes(), b"export FIRST=one\nexport SECOND=two\n")
+                    result = subprocess.run(["/bin/zsh", "-f", "-c",
+                                             'source "$1"; print -r -- "$FIRST/$SECOND"',
+                                             "zsh", str(rc)], env=self.env, capture_output=True,
+                                            text=True, check=True, timeout=5)
+                    self.assertEqual(result.stdout, "one/two\n")
+
     def test_installer_refuses_growth_beyond_read_limit_before_installing(self):
         rc = self.home / ".zshrc"
         original = b"#" + b"x" * (bw.LIMIT - 2) + b"\n"
@@ -911,7 +991,7 @@ class BrewWatchTests(unittest.TestCase):
             self.assertNotIn(b"These brews", transcript)
             self.assertNotIn(b"__BREW_WATCH_PROGRESS__", transcript)
             self.assertEqual(len(self.calls()), 1)
-            self.assertEqual(self.state()["packages"], [])
+            self.assertEqual(self.state()["package_count"], 0)
             self.assertIsNotNone(self.state()["last_check"])
         finally:
             os.close(terminal)
@@ -964,7 +1044,7 @@ class BrewWatchTests(unittest.TestCase):
                              [["outdated", "--json=v2"]])
             self.assertNotIn(b"bad file descriptor", transcript)
             self.assertNotIn(b"__BREW_WATCH_PROGRESS__", transcript)
-            self.assertEqual(len(self.state()["packages"]), 2)
+            self.assertEqual(self.state()["package_count"], 2)
         finally:
             os.close(terminal)
             try:
