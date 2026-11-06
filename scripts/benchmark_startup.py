@@ -81,31 +81,29 @@ def batch(env, count, *, active=False):
         time.sleep(.3)  # Let cached-state workers close before removing their home.
         return prompt_times, input_times
     finally:
-        # Signal every shell before closing masters or waiting on any one shell.
+        # Signal every shell, then release PTYs before waiting for terminal teardown.
         for s in sessions.values():
             try:
                 os.kill(s['pid'], signal.SIGHUP)
             except ProcessLookupError:
                 pass
         pending = {s['pid'] for s in sessions.values()}
-        try:
-            for sig in (signal.SIGHUP, signal.SIGKILL):
-                if sig == signal.SIGKILL:
-                    for pid in pending:
-                        try:
-                            os.kill(pid, sig)
-                        except ProcessLookupError:
-                            pass
-                deadline = time.monotonic() + (0.2 if sig == signal.SIGHUP else 2)
-                while pending and time.monotonic() < deadline:
-                    pending = {pid for pid in pending if os.waitpid(pid, os.WNOHANG)[0] == 0}
-                    if pending:
-                        time.sleep(.02)
-            if pending:
-                raise RuntimeError('Benchmark shells did not exit during bounded cleanup')
-        finally:
-            for fd in sessions:
-                os.close(fd)
+        for fd in sessions:
+            os.close(fd)
+        for sig in (signal.SIGHUP, signal.SIGKILL):
+            if sig == signal.SIGKILL:
+                for pid in pending:
+                    try:
+                        os.kill(pid, sig)
+                    except ProcessLookupError:
+                        pass
+            deadline = time.monotonic() + (0.2 if sig == signal.SIGHUP else 2)
+            while pending and time.monotonic() < deadline:
+                pending = {pid for pid in pending if os.waitpid(pid, os.WNOHANG)[0] == 0}
+                if pending:
+                    time.sleep(.02)
+        if pending:
+            raise RuntimeError('Benchmark shells did not exit during bounded cleanup')
 
 
 def main():
